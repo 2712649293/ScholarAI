@@ -3,8 +3,8 @@ import { describe, it, expect } from 'vitest'
 import { ChatPage } from './ChatPage'
 
 describe('ChatPage', () => {
-  it('renders ScholarAI heading', () => {
+  it('renders chat input placeholder', () => {
     render(<ChatPage />)
-    expect(screen.getByRole('heading', { name: /ScholarAI/i })).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('输入你的问题…')).toBeInTheDocument()
   })
 })
