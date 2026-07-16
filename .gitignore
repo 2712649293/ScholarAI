@@ -1,0 +1,41 @@
+# Secrets
+apikey.txt
+.env
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.whl
+
+# Node
+node_modules/
+.npm/
+.vite/
+*.log
+.DS_Store
+
+# Data (papers, uploads, chroma, sqlite)
+data/
+backend/data/
+uploads/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Coverage
+.coverage
+htmlcov/
