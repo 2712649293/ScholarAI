@@ -68,3 +68,70 @@ def test_response_includes_request_id_header() -> None:
             headers={"X-Request-ID": "test-rid-123"},
         )
     assert resp.headers.get("X-Request-ID") == "test-rid-123"
+
+
+def test_qa_with_kb_returns_citations() -> None:
+    """挂载 KB 时：返回 citations，且 LLM 收到的 prompt 含参考资料块。"""
+    _setup_clean_store()
+    fake_hits = [
+        {
+            "text": "RAG 检索增强生成提升事实准确性。",
+            "doc_id": "doc-abc",
+            "page": 3,
+            "chunk_index": 0,
+            "score": 0.92,
+        },
+        {
+            "text": "LangGraph 是 LangChain 的扩展，支持循环与状态。",
+            "doc_id": "doc-def",
+            "page": 1,
+            "chunk_index": 2,
+            "score": 0.81,
+        },
+    ]
+    captured: dict = {}
+
+    async def fake_call_llm(messages, **kw):
+        # 抓住 prompt 内容用于断言
+        captured["sys"] = messages[0].content
+        captured["user"] = messages[-1].content
+        return "RAG 是一种 [1]，而 LangGraph [2]..."
+
+    with (
+        patch("app.api.chat.call_llm", new=AsyncMock(side_effect=fake_call_llm)),
+        patch("app.api.chat.indexer.search", return_value=fake_hits),
+    ):
+        resp = client.post(
+            "/api/chat/qa",
+            json={"query": "解释 RAG 和 LangGraph", "kb_ids": ["kb-1"]},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["citations"]) == 2
+    assert body["citations"][0]["doc_id"] == "doc-abc"
+    assert body["citations"][0]["score"] == 0.92
+    # LLM 收到的 prompt 应包含参考资料块
+    assert "参考资料" in captured["sys"]
+    assert "[1]" in captured["sys"]
+    assert "doc-abc" in captured["sys"]
+    assert "LangGraph" in captured["sys"]
+
+
+def test_qa_without_kb_has_no_citations() -> None:
+    _setup_clean_store()
+    with patch("app.api.chat.call_llm", new=AsyncMock(return_value="通用回答")):
+        resp = client.post("/api/chat/qa", json={"query": "你好"})
+    assert resp.status_code == 200
+    assert resp.json()["citations"] == []
+
+
+def test_qa_rag_search_failure_degrades_gracefully() -> None:
+    """单 KB 检索失败不阻断整体流程（§8.3 降级）。"""
+    _setup_clean_store()
+    with (
+        patch("app.api.chat.call_llm", new=AsyncMock(return_value="回答")),
+        patch("app.api.chat.indexer.search", side_effect=RuntimeError("chroma down")),
+    ):
+        resp = client.post("/api/chat/qa", json={"query": "x", "kb_ids": ["kb-bad"]})
+    assert resp.status_code == 200
+    assert resp.json()["citations"] == []
