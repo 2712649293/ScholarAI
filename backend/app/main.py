@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import chat
+from app.api import chat, knowledge
 from app.config import settings
 from app.errors import ScholarAIError
 
@@ -56,6 +56,7 @@ async def unhandled_handler(request: Request, exc: Exception):
 
 
 app.include_router(chat.router, prefix="/api")
+app.include_router(knowledge.router, prefix="/api")
 
 
 @app.get("/health")
