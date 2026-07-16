@@ -11,6 +11,7 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined)
 
   const canSend = input.trim().length > 0 && !loading
 
@@ -23,7 +24,8 @@ export function ChatPanel() {
     setLoading(true)
     setError(null)
     try {
-      const { reply } = await chatQA(userMsg.content)
+      const { reply, session_id } = await chatQA(userMsg.content, sessionId)
+      setSessionId(session_id)
       setMessages((m) => [...m, { role: 'assistant', content: reply }])
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : String(err)

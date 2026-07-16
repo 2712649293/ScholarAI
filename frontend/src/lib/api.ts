@@ -32,13 +32,16 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export interface ChatRequest {
   query: string
+  session_id?: string
+  max_history?: number
 }
 
 export interface ChatResponse {
   reply: string
+  session_id: string
   echo: boolean
 }
 
-export function chatQA(query: string): Promise<ChatResponse> {
-  return postJson<ChatResponse>('/api/chat/qa', { query })
+export function chatQA(query: string, sessionId?: string): Promise<ChatResponse> {
+  return postJson<ChatResponse>('/api/chat/qa', { query, session_id: sessionId })
 }

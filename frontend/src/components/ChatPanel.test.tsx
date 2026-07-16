@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ChatPanel } from './ChatPanel'
 import { chatQA } from '@/lib/api'
@@ -15,7 +15,7 @@ describe('ChatPanel', () => {
 
   it('sends message and shows reply', async () => {
     const mocked = vi.mocked(chatQA)
-    mocked.mockResolvedValue({ reply: '你好，世界', echo: true })
+    mocked.mockResolvedValue({ reply: '你好，世界', session_id: 'sess-1', echo: false })
     const user = userEvent.setup()
     render(<ChatPanel />)
     const input = screen.getByPlaceholderText('输入你的问题…') as HTMLInputElement
@@ -24,7 +24,7 @@ describe('ChatPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('你好，世界')).toBeInTheDocument()
     })
-    expect(mocked).toHaveBeenCalledWith('hi')
+    expect(mocked).toHaveBeenCalledWith('hi', undefined)
   })
 
   it('shows error on failure', async () => {
