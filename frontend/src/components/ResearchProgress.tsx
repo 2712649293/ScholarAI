@@ -1,26 +1,29 @@
-const RESEARCH_STEPS = [
-  { node: 'planner', label: '规划研究范围' },
-  { node: 'searcher', label: '检索 arxiv' },
-  { node: 'downloader', label: '下载 PDF' },
-  { node: 'analyzer', label: '解析论文' },
-  { node: 'synthesizer', label: '生成综述' },
-  { node: 'reviewer', label: '审校' },
-]
+// tool 名 → 时间线显示的标签
+const TOOL_LABELS: Record<string, string> = {
+  search_arxiv: '🔍 检索 arxiv',
+  download_papers: '⬇ 下载 PDF',
+  analyze_papers: '🧠 解析论文',
+  write_review: '✍ 生成综述',
+  review_report: '✅ 审校',
+}
 
-export function ResearchProgress({ done }: { done: Set<string> }) {
+export function labelForTool(node: string): string {
+  return TOOL_LABELS[node] ?? `▶ ${node}`
+}
+
+/** 动态时间线：agent 每调一次 tool 追加一条（可重复/跳过）。 */
+export function ResearchProgress({ steps }: { steps: string[] }) {
   return (
     <div className="space-y-1 rounded-lg bg-white px-4 py-3 text-sm shadow-sm">
-      {RESEARCH_STEPS.map((s) => {
-        const isDone = done.has(s.node)
-        return (
-          <div
-            key={s.node}
-            className={isDone ? 'text-green-600' : 'text-zinc-400'}
-          >
-            {isDone ? '✓' : '⏳'} {s.label}
+      {steps.length === 0 ? (
+        <div className="text-zinc-400">⏳ 主 agent 规划中…</div>
+      ) : (
+        steps.map((label, i) => (
+          <div key={i} className="text-zinc-700">
+            {label}
           </div>
-        )
-      })}
+        ))
+      )}
     </div>
   )
 }

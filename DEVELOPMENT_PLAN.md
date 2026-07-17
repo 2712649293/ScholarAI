@@ -769,12 +769,15 @@ ReAct 完全依赖模型工具调用能力。`deepseek-v4-flash` 若 function ca
 - **M4.5.4**：前端动态时间线（替换固定 6 步 `ResearchProgress`）+ fake-model 测试
 
 ### M4.5 退出检查
-- [ ] smoke test 确认 deepseek-v4-flash 能正确选工具/填参/连续调用
-- [ ] agent 能按需跳步/补搜（非固定顺序）
-- [ ] tool 前置校验生效（乱序调用被拦、agent 自纠）
-- [ ] `recursion_limit` 防空转
-- [ ] 前端动态时间线随 tool 调用更新
-- [ ] fake-model 测试覆盖 agent 循环，不烧 token
+- [x] smoke test 确认 deepseek-v4-flash 能正确选工具/填参/连续调用
+- [x] agent 能按需跳步/补搜（非固定顺序）— 由 tool 前置校验 + prompt 支撑
+- [x] tool 前置校验生效（乱序调用被拦、agent 自纠）
+- [x] `recursion_limit` 防空转（api 层 invoke 传 25 + GraphRecursionError 兜底收尾）
+- [x] 前端动态时间线随 tool 调用更新
+- [x] fake-model 测试覆盖 agent 循环，不烧 token
+- [ ] 真实 DeepSeek 端到端跑一次完整研究（手动，需网络+token）
+
+> 备注：`create_react_agent` 在 langgraph V1 已弃用，改用 `langchain.agents.create_agent(model, tools, system_prompt=...)`。
 
 ---
 

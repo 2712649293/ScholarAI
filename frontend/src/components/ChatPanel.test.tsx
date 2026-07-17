@@ -76,7 +76,7 @@ describe('ChatPanel', () => {
 
   it('research mode: streams steps then renders markdown report', async () => {
     vi.mocked(researchStream).mockImplementation((_body, onEvent) => {
-      onEvent('step', { node: 'planner' })
+      onEvent('step', { node: 'search_arxiv' })
       onEvent('final', {
         session_id: 'sess-r',
         report_markdown: '# 综述标题\n正文内容',

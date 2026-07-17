@@ -12,7 +12,7 @@ import {
   type KB,
   type ResearchFinal,
 } from '@/lib/api'
-import { ResearchProgress } from '@/components/ResearchProgress'
+import { ResearchProgress, labelForTool } from '@/components/ResearchProgress'
 
 type Mode = 'qa' | 'research'
 
@@ -42,7 +42,7 @@ export function ChatPanel() {
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | undefined>(routeSessionId)
   const [mode, setMode] = useState<Mode>('qa')
-  const [doneNodes, setDoneNodes] = useState<Set<string>>(new Set())
+  const [researchSteps, setResearchSteps] = useState<string[]>([])
 
   const [kbs, setKBs] = useState<KB[]>([])
   const [selectedKBs, setSelectedKBs] = useState<Set<string>>(new Set())
@@ -89,11 +89,11 @@ export function ChatPanel() {
   const canSend = input.trim().length > 0 && !loading
 
   function runResearch(query: string) {
-    setDoneNodes(new Set())
+    setResearchSteps([])
     researchStream({ query, session_id: sessionId, depth: 'normal' }, (event, data) => {
       if (event === 'step') {
         const { node } = data as { node: string }
-        setDoneNodes((prev) => new Set(prev).add(node))
+        setResearchSteps((prev) => [...prev, labelForTool(node)])
       } else if (event === 'final') {
         const f = data as ResearchFinal
         setSessionId(f.session_id)
@@ -191,7 +191,7 @@ export function ChatPanel() {
           {messages.map((m, i) => (
             <MessageBubble key={i} msg={m} />
           ))}
-          {loading && mode === 'research' && <ResearchProgress done={doneNodes} />}
+          {loading && mode === 'research' && <ResearchProgress steps={researchSteps} />}
           {loading && mode === 'qa' && (
             <div className="mr-auto max-w-[80%] rounded-lg bg-white px-4 py-2 text-sm text-zinc-400 shadow-sm">
               思考中…
