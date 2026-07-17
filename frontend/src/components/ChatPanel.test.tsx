@@ -4,7 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { ChatPanel } from './ChatPanel'
 import { chatQA } from '@/lib/api'
 
-vi.mock('@/lib/api', () => ({ chatQA: vi.fn(), ApiError: class extends Error {} }))
+vi.mock('@/lib/api', () => ({
+  chatQA: vi.fn(),
+  listKBs: vi.fn().mockResolvedValue([]),
+  ApiError: class extends Error {},
+}))
 
 describe('ChatPanel', () => {
   it('disables send button when input is empty', () => {
@@ -15,7 +19,12 @@ describe('ChatPanel', () => {
 
   it('sends message and shows reply', async () => {
     const mocked = vi.mocked(chatQA)
-    mocked.mockResolvedValue({ reply: '你好，世界', session_id: 'sess-1', echo: false })
+    mocked.mockResolvedValue({
+      reply: '你好，世界',
+      session_id: 'sess-1',
+      echo: false,
+      citations: [],
+    })
     const user = userEvent.setup()
     render(<ChatPanel />)
     const input = screen.getByPlaceholderText('输入你的问题…') as HTMLInputElement
@@ -24,7 +33,7 @@ describe('ChatPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('你好，世界')).toBeInTheDocument()
     })
-    expect(mocked).toHaveBeenCalledWith('hi', undefined)
+    expect(mocked).toHaveBeenCalledWith('hi', undefined, [])
   })
 
   it('shows error on failure', async () => {
@@ -37,5 +46,26 @@ describe('ChatPanel', () => {
     await waitFor(() => {
       expect(screen.getByText(/网络挂了/)).toBeInTheDocument()
     })
+  })
+
+  it('renders citations as badges', async () => {
+    const mocked = vi.mocked(chatQA)
+    mocked.mockResolvedValue({
+      reply: '基于知识库的回答',
+      session_id: 'sess-1',
+      echo: false,
+      citations: [
+        { kb_id: 'kb1', doc_id: 'doc-abc', page: 3, chunk_index: 0, text: '片段 A', score: 0.9 },
+        { kb_id: 'kb1', doc_id: 'doc-def', page: 1, chunk_index: 0, text: '片段 B', score: 0.8 },
+      ],
+    })
+    const user = userEvent.setup()
+    render(<ChatPanel />)
+    await user.type(screen.getByPlaceholderText('输入你的问题…'), 'hi{Enter}')
+    await waitFor(() => {
+      expect(screen.getByText('基于知识库的回答')).toBeInTheDocument()
+    })
+    expect(screen.getByText('[1] doc-abc p.3')).toBeInTheDocument()
+    expect(screen.getByText('[2] doc-def p.1')).toBeInTheDocument()
   })
 })
