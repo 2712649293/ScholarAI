@@ -1195,6 +1195,7 @@ class UploadConstraints:
 | 2026-07-16 | Reviewer 循环的 `iteration` 由 synthesizer 每次运行 +1 | 单一自增点，避免重复计数 |
 | 2026-07-17 | 研究综述 `.md` 文件名加唯一后缀 | 同一 session 多次研究不互相覆盖（M4.5 实测发现） |
 | 2026-07-17 | 研究模式跨轮记忆（聊天追问）列为 v0.2 首要 | M4.5 实测：追问因每请求新建 context 而失败；见 §12.11 |
+| 2026-07-17 | 测试隔离：conftest 指向临时 SQLite + 临时数据目录 | 测试不再污染 dev 库/reports；越早做越省事 |
 
 ---
 
