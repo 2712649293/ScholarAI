@@ -30,3 +30,9 @@ dev = [
     "pytest-asyncio>=1.4.0",
 ]
 rag = []
+
+[tool.pytest.ini_options]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: 真实外部调用（LLM/arxiv/网络），默认跳过；跑用 pytest -m integration",
+]
