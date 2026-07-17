@@ -50,6 +50,29 @@ def test_download_skips_existing(tmp_path) -> None:
     assert out["download_failures"] == []
 
 
+def test_download_total_timeout_protects_against_hung_request(tmp_path) -> None:
+    """单个 hung 请求不能让 gather 永远挂住——总超时后全部失败（修 19 分钟卡死 bug）。"""
+    import asyncio as _asyncio
+
+    papers = [
+        {"arxiv_id": f"hang-{i}", "title": f"T{i}", "pdf_url": f"http://x/{i}.pdf"}
+        for i in range(3)
+    ]
+
+    async def hung_fetch(client, url):
+        await _asyncio.sleep(60)  # 远超测试超时
+
+    with (
+        patch.object(downloader.settings, "paper_storage_dir", str(tmp_path)),
+        patch("app.agents.nodes.downloader.DOWNLOAD_TOTAL_TIMEOUT", 0.5),
+        patch("app.agents.nodes.downloader._fetch", new=hung_fetch),
+    ):
+        out = _asyncio.run(downloader.run({"papers": papers}))
+
+    assert sorted(out["download_failures"]) == ["hang-0", "hang-1", "hang-2"]
+    assert out["papers"]  # 至少原 paper 结构保留
+
+
 def test_download_empty() -> None:
     out = asyncio.run(downloader.run({"papers": []}))
     assert out == {"papers": [], "download_failures": []}

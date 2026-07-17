@@ -16,6 +16,7 @@ from app.agents.state import ResearchState
 from app.config import settings
 
 MAX_CONCURRENT = 5
+DOWNLOAD_TOTAL_TIMEOUT = 180  # 全部下载总超时（秒）；到点未完成的算失败，防 httpx 卡死
 _RETRYABLE = (httpx.TransportError, httpx.HTTPStatusError)
 
 
@@ -60,10 +61,29 @@ async def run(state: ResearchState) -> ResearchState:
     dest_dir.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(
-            *(_download_one(client, sem, p, dest_dir) for p in papers)
-        )
+        # 兜底：gather 等所有并发完成，单条卡死会一直挂。加总超时，到点取已下完的
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *(_download_one(client, sem, p, dest_dir) for p in papers),
+                    return_exceptions=True,
+                ),
+                timeout=DOWNLOAD_TOTAL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            # 全部标记失败（gather 在超时后行为不可靠；保守起见用 None，后续判定失败）
+            results = [None] * len(papers)
 
-    updated = [p for p, _ in results]
-    failures = [p["arxiv_id"] for p, ok in results if not ok]
+    updated: list[dict] = []
+    failures: list[str] = []
+    for paper, r in zip(papers, results):
+        if r is None or isinstance(r, BaseException):
+            # 超时/异常：保留原 paper（synthesizer 会退回 abstract），仅记失败
+            updated.append(paper)
+            failures.append(paper["arxiv_id"])
+            continue
+        updated_paper, ok = r
+        updated.append(updated_paper)
+        if not ok:
+            failures.append(updated_paper["arxiv_id"])
     return {"papers": updated, "download_failures": failures}
