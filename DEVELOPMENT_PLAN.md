@@ -494,11 +494,11 @@ PATCH  /api/sessions/{id}         # 改 title
 - ChatPage 把 sessionId 透传给 ChatPanel
 
 ### M2.6.8 退出检查
-- [ ] session 写入 DB，重启后端不丢
-- [ ] Sidebar「对话」显示列表，能点开旧 session
-- [ ] 能删除 session
-- [ ] /chat/:id 路由能加载历史消息
-- [ ] 标题自动生成（无 LLM 调用）
+- [x] session 写入 DB，重启后端不丢
+- [x] Sidebar「对话」显示列表，能点开旧 session
+- [x] 能删除 session
+- [x] /chat/:id 路由能加载历史消息
+- [x] 标题自动生成（无 LLM 调用）
 
 ---
 
