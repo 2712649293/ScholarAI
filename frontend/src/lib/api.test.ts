@@ -78,10 +78,16 @@ describe('api.knowledge', () => {
     })
   })
 
-  it('deleteKB sends DELETE', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 204, json: async () => null })
+  it('deleteKB sends DELETE and handles 204', async () => {
+    // 模拟 204 No Content：body 为空，.json() 会抛
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      headers: { get: (k: string) => (k.toLowerCase() === 'content-length' ? '0' : null) },
+      json: async () => { throw new SyntaxError('unexpected end of data') },
+    })
     vi.stubGlobal('fetch', mockFetch)
-    await deleteKB('k1')
+    await expect(deleteKB('k1')).resolves.toBeUndefined()
     expect(mockFetch).toHaveBeenCalledWith('/api/knowledge/k1', { method: 'DELETE' })
   })
 })

@@ -23,6 +23,10 @@ async function handle<T>(res: Response): Promise<T> {
     }
     throw new ApiError(message, res.status, code)
   }
+  // 204 No Content / 空 body：直接返回 undefined
+  if (res.status === 204) {
+    return undefined as T
+  }
   return (await res.json()) as T
 }
 
