@@ -48,6 +48,16 @@ export async function deleteJson<T = void>(path: string): Promise<T> {
   return handle<T>(await fetch(path, { method: 'DELETE' }))
 }
 
+export async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  return handle<T>(
+    await fetch(path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+}
+
 // === Chat ===
 
 export interface ChatRequest {
@@ -145,4 +155,44 @@ export async function uploadDoc(kbId: string, file: File): Promise<Doc> {
 
 export function searchKB(kbId: string, query: string, k = 5): Promise<SearchHit[]> {
   return postJson<SearchHit[]>(`/api/knowledge/${kbId}/search`, { query, k })
+}
+
+// === Sessions（M2.6） ===
+
+export interface SessionSummary {
+  id: string
+  title: string
+  mode: string
+  status: string
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SessionMessage {
+  id: string
+  role: string
+  content: string
+  extra?: string | null
+  created_at: string
+}
+
+export interface SessionDetail extends SessionSummary {
+  messages: SessionMessage[]
+}
+
+export function listSessions(): Promise<SessionSummary[]> {
+  return getJson<SessionSummary[]>('/api/sessions')
+}
+
+export function getSession(id: string): Promise<SessionDetail> {
+  return getJson<SessionDetail>(`/api/sessions/${id}`)
+}
+
+export function deleteSession(id: string): Promise<void> {
+  return deleteJson(`/api/sessions/${id}`)
+}
+
+export function updateSession(id: string, title: string): Promise<SessionSummary> {
+  return patchJson<SessionSummary>(`/api/sessions/${id}`, { title })
 }

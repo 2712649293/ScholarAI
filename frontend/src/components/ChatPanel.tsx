@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { chatQA, listKBs, ApiError, type Citation, type KB } from '@/lib/api'
+import { useNavigate, useParams } from 'react-router-dom'
+import { chatQA, getSession, listKBs, ApiError, type Citation, type KB } from '@/lib/api'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -8,11 +9,13 @@ interface Message {
 }
 
 export function ChatPanel() {
+  const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>()
+  const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sessionId, setSessionId] = useState<string | undefined>(undefined)
+  const [sessionId, setSessionId] = useState<string | undefined>(routeSessionId)
 
   const [kbs, setKBs] = useState<KB[]>([])
   const [selectedKBs, setSelectedKBs] = useState<Set<string>>(new Set())
@@ -20,6 +23,27 @@ export function ChatPanel() {
   useEffect(() => {
     listKBs().then(setKBs).catch(() => setKBs([]))
   }, [])
+
+  // M2.6.6: 路由 session 变化时加载历史（点侧边栏 / 直接开 URL / 新对话）
+  useEffect(() => {
+    if (!routeSessionId) {
+      setSessionId(undefined)
+      setMessages([])
+      return
+    }
+    if (routeSessionId === sessionId) return // 自己刚创建的，别重复拉
+    setSessionId(routeSessionId)
+    getSession(routeSessionId)
+      .then((s) =>
+        setMessages(
+          s.messages
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        ),
+      )
+      .catch(() => setMessages([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeSessionId])
 
   function toggleKB(id: string) {
     setSelectedKBs((prev) => {
@@ -48,6 +72,8 @@ export function ChatPanel() {
       )
       setSessionId(session_id)
       setMessages((m) => [...m, { role: 'assistant', content: reply, citations }])
+      // 新对话：把 session id 反映到 URL，侧边栏才能高亮 + 刷新列表
+      if (!routeSessionId) navigate(`/chat/${session_id}`)
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : String(err)
       setError(msg)

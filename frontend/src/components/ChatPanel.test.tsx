@@ -1,18 +1,22 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { ChatPanel } from './ChatPanel'
 import { chatQA } from '@/lib/api'
 
 vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
   listKBs: vi.fn().mockResolvedValue([]),
+  getSession: vi.fn().mockResolvedValue({ messages: [] }),
   ApiError: class extends Error {},
 }))
 
+const renderPanel = () => render(<ChatPanel />, { wrapper: MemoryRouter })
+
 describe('ChatPanel', () => {
   it('disables send button when input is empty', () => {
-    render(<ChatPanel />)
+    renderPanel()
     const btn = screen.getByRole('button', { name: '发送' })
     expect(btn).toBeDisabled()
   })
@@ -26,7 +30,7 @@ describe('ChatPanel', () => {
       citations: [],
     })
     const user = userEvent.setup()
-    render(<ChatPanel />)
+    renderPanel()
     const input = screen.getByPlaceholderText('输入你的问题…') as HTMLInputElement
     await user.type(input, 'hi{Enter}')
 
@@ -40,7 +44,7 @@ describe('ChatPanel', () => {
     const mocked = vi.mocked(chatQA)
     mocked.mockRejectedValue(new Error('网络挂了'))
     const user = userEvent.setup()
-    render(<ChatPanel />)
+    renderPanel()
     const input = screen.getByPlaceholderText('输入你的问题…')
     await user.type(input, 'hi{Enter}')
     await waitFor(() => {
@@ -60,7 +64,7 @@ describe('ChatPanel', () => {
       ],
     })
     const user = userEvent.setup()
-    render(<ChatPanel />)
+    renderPanel()
     await user.type(screen.getByPlaceholderText('输入你的问题…'), 'hi{Enter}')
     await waitFor(() => {
       expect(screen.getByText('基于知识库的回答')).toBeInTheDocument()
