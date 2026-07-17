@@ -1,10 +1,15 @@
-"""内存版 session/message 存储（M1.4 占位，M2.1 替换为 SQLite）。"""
+"""DB 版 session/message 存储（M2.6.1）。
+
+保持 get_or_create / get / recent / add_message 接口不变，chat.py 零改动。
+ponytail: 不做内存缓存——本地 SQLite 够快；要缓存等切 Postgres 再说。
+"""
 from __future__ import annotations
 
 import uuid
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Deque
+from dataclasses import dataclass
+
+from app.db.models import MessageModel, SessionModel
+from app.db.session import SessionLocal
 
 
 @dataclass
@@ -16,40 +21,53 @@ class Message:
 @dataclass
 class Session:
     id: str
-    title: str = "新对话"
-    mode: str = "qa"
-    messages: Deque[Message] = field(default_factory=lambda: deque(maxlen=20))
+    title: str
+    mode: str
 
 
-class InMemorySessionStore:
-    """线程不安全的单进程内存版存储；够 dev 用。"""
-
-    def __init__(self) -> None:
-        self._sessions: dict[str, Session] = {}
+class DBSessionStore:
+    """写穿透到 DB；每次调用开一个短生命周期 Session。"""
 
     def get_or_create(self, session_id: str | None, *, mode: str = "qa") -> Session:
-        if session_id and session_id in self._sessions:
-            return self._sessions[session_id]
-        new_id = session_id or uuid.uuid4().hex
-        s = Session(id=new_id, mode=mode)
-        self._sessions[new_id] = s
-        return s
+        with SessionLocal() as db:
+            if session_id:
+                s = db.get(SessionModel, session_id)
+                if s is not None:
+                    return Session(id=s.id, title=s.title, mode=s.mode)
+            new_id = session_id or uuid.uuid4().hex
+            s = SessionModel(id=new_id, mode=mode)
+            db.add(s)
+            db.commit()
+            db.refresh(s)
+            return Session(id=s.id, title=s.title, mode=s.mode)
 
     def get(self, session_id: str) -> Session | None:
-        return self._sessions.get(session_id)
+        with SessionLocal() as db:
+            s = db.get(SessionModel, session_id)
+            return Session(id=s.id, title=s.title, mode=s.mode) if s else None
 
     def add_message(self, session_id: str, role: str, content: str) -> None:
-        s = self._sessions.get(session_id)
-        if s is None:
-            return
-        s.messages.append(Message(role=role, content=content))
+        with SessionLocal() as db:
+            s = db.get(SessionModel, session_id)
+            if s is None:
+                return
+            db.add(MessageModel(session_id=session_id, role=role, content=content))
+            # M2.6.2: 首条用户消息截前 20 字作标题（不用 LLM，省 token）
+            if role == "user" and s.title == "新对话":
+                s.title = content[:20]
+            db.commit()
 
     def recent(self, session_id: str, n: int = 10) -> list[Message]:
-        s = self._sessions.get(session_id)
-        if s is None:
-            return []
-        return list(s.messages)[-n:]
+        with SessionLocal() as db:
+            rows = (
+                db.query(MessageModel)
+                .filter(MessageModel.session_id == session_id)
+                .order_by(MessageModel.created_at.desc(), MessageModel.id.desc())
+                .limit(n)
+                .all()
+            )
+            return [Message(role=r.role, content=r.content) for r in reversed(rows)]
 
 
 # ponytail: 单例
-store = InMemorySessionStore()
+store = DBSessionStore()

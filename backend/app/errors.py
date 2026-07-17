@@ -30,3 +30,7 @@ class InvalidQuery(ScholarAIError):
 
 class ResourceLimitExceeded(ScholarAIError):
     code, status_code = "resource_limit_exceeded", 413
+
+
+class SessionNotFound(ScholarAIError):
+    code, status_code = "session_not_found", 404

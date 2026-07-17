@@ -10,8 +10,8 @@ client = TestClient(app)
 
 
 def _setup_clean_store() -> None:
-    """每个测试前清空内存 store。"""
-    store._sessions.clear()  # type: ignore[attr-defined]
+    """DB 版 store 每个测试自建新 session，无需清空（且不能清——测试跑在真库上）。"""
+    pass
 
 
 def test_qa_returns_llm_reply() -> None:
@@ -45,7 +45,7 @@ def test_qa_reuses_session_id_for_history() -> None:
     assert r1.json()["reply"] == "R1"
     assert r2.json()["reply"] == "R2"
     # store 里应有 4 条消息
-    assert len(store.get(sid).messages) == 4  # type: ignore[union-attr]
+    assert len(store.recent(sid, n=20)) == 4
 
 
 def test_qa_llm_timeout_returns_504() -> None:
