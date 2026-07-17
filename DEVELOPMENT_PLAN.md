@@ -126,6 +126,7 @@ test-fe:
 | **M2.6** | 对话记录持久化 + 侧边栏 | 8 | 重启不丢 + 侧边栏能看历史 |
 | **M3** | 研究模式 v1：3 节点（abstract 综述） | 4 | 给方向 → 拿到 abstract 级综述 |
 | **M4** | 研究模式 v2：下载 + PDF 解析 | 4 | 给方向 → 拿到论文级综述 |
+| **M4.5** | 研究重构：ReAct 主 agent 调度子 agent | 5 | 主 agent 动态派发，非固定流水线 |
 | **M5** | 可观测性 | 4 | LangSmith 看得到 trace，`/metrics` 暴露 |
 | **M6** | 部署 | 4 | `docker compose up` 拉起完整栈 |
 
@@ -730,7 +731,55 @@ g.add_conditional_edges("reviewer", lambda s: END if s.get("pass") or s.get("ite
 
 ---
 
+## 5.5 M4.5 · 研究模式重构：固定流水线 → ReAct 主 agent 调度
+
+> **动机**：M3/M4 是**工作流**——节点顺序写死在图里（flow-triggered）。改成 **orchestrator-workers**：一个 ReAct 主 agent 动态决定派哪个子 agent，能补搜、跳步、按需重来。
+>
+> **已定决策**（2026-07-16）：
+> - 实现方式：**ReAct + worker 当 tool**（`create_react_agent`），非手写路由、非预制库
+> - 新旧处理：**直接替换**固定流水线（回退靠 git tag `v0.1.0-m4`）
+> - 自主程度：**半约束**——约束靠 tool 前置校验 + prompt 规则 + 步数上限，不靠图结构
+> - worker 核心逻辑全复用，只换编排层
+
+### 架构
+```
+        ┌───────────────────────────┐
+        │   ReAct Research Agent     │  LLM 自己决定调哪个 tool
+        └─────────────┬─────────────┘
+       调用 tool ↓        ↑ observation（简短文字）
+  ┌──────┬────────┬────────┬──────────┬─────────┐
+ search  download  analyze  synthesize  review    ← tools（包现有 worker 逻辑）
+```
+
+### 关键设计
+- **数据走 per-request 上下文，不走 message**：`ResearchContext` 存 papers/analyses/draft；tool 只返回一句 observation（如"找到 12 篇"），重数据不进对话历史（防 context 爆）。⚠️ **每请求新建 context，禁用模块单例**（并发会串数据）。
+- **半约束三层**：① tool 前置校验（`analyze` 无已下载论文→返回错误让 agent 自纠；`synthesize` 要有 papers；`review` 要有 draft）② system prompt 写明流程 + 回头规则（搜到 <N 篇补搜；审校不过重写，最多 2 次）③ `recursion_limit`（~12）到顶强制收工——**防空转硬闸**。
+- **产出**：agent 停下后，报告 = `context.draft`、papers = `context.papers`（不依赖 agent 末句）。session/messages/`.md` 落盘逻辑不变。
+- **SSE / 前端**：进度从固定 6 步改为**动态时间线**——每次 tool 调用 append 一条（可重复/跳过）；`stream_mode="updates"` 取每步 tool 调用。
+- **测试**：tool 函数体直接单测（复用现有 worker 测试）；agent 循环用 **fake chat model 脚本化 tool_calls**（确定性），不真调 LLM。
+
+### 🚨 首要风险：DeepSeek function calling
+ReAct 完全依赖模型工具调用能力。`deepseek-v4-flash` 若 function calling 弱/不稳，agent 转不动。**必须先 smoke test 验证**（M4.5.0），通过再全力实现；不通过则回退到"结构化路由 supervisor"（不依赖 function calling）。
+
+### 子阶段
+- **M4.5.0**：DeepSeek 工具调用 smoke test（先验风险，`tests/integration/`，需网络+key）
+- **M4.5.1**：`ResearchContext` + 5 个 tool（包现有 worker 逻辑）
+- **M4.5.2**：`create_react_agent` 装配 + prompt 规则 + `recursion_limit`
+- **M4.5.3**：替换 `api/research.py`（sync + stream）+ SSE 动态事件
+- **M4.5.4**：前端动态时间线（替换固定 6 步 `ResearchProgress`）+ fake-model 测试
+
+### M4.5 退出检查
+- [ ] smoke test 确认 deepseek-v4-flash 能正确选工具/填参/连续调用
+- [ ] agent 能按需跳步/补搜（非固定顺序）
+- [ ] tool 前置校验生效（乱序调用被拦、agent 自纠）
+- [ ] `recursion_limit` 防空转
+- [ ] 前端动态时间线随 tool 调用更新
+- [ ] fake-model 测试覆盖 agent 循环，不烧 token
+
+---
+
 ## 6. M5 · 可观测性
+
 
 ### M5.1 structlog 结构化日志
 **文件**：`backend/app/observability/logging.py`
