@@ -37,6 +37,12 @@ def make_tools(ctx: ResearchContext) -> list[BaseTool]:
         ctx.papers = out["papers"]
         ctx.download_failures = out["download_failures"]
         ok = sum(1 for p in ctx.papers if p.get("local_path"))
+        if ok == 0:  # 防死循环：全失败时强信号让 agent 退到 abstract，不要再 search
+            return (
+                f"下载完成：成功 0 篇，失败 {len(ctx.download_failures)} 篇（PDF 不可达或网络问题）。"
+                f"**请直接调用 write_review 用已有 abstract 生成综述，**"
+                f"**禁止再次调用 search_arxiv。**"
+            )
         return f"下载完成：成功 {ok} 篇，失败 {len(ctx.download_failures)} 篇"
 
     @tool

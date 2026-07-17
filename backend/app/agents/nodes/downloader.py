@@ -27,7 +27,7 @@ _RETRYABLE = (httpx.TransportError, httpx.HTTPStatusError)
     reraise=True,
 )
 async def _fetch(client: httpx.AsyncClient, url: str) -> bytes:
-    r = await client.get(url, follow_redirects=True, timeout=30.0)
+    r = await client.get(url, follow_redirects=True, timeout=15.0)
     r.raise_for_status()
     return r.content
 
