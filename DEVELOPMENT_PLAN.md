@@ -723,10 +723,10 @@ g.add_conditional_edges("reviewer", lambda s: END if s.get("pass") or s.get("ite
 ✅ → **打 tag v0.1.0-m4**
 
 **M4 退出检查**：
-- [ ] `data/papers/` 有真实 PDF 文件
-- [ ] 每篇 analyses 字段完整（5 个字段都非空）
-- [ ] 综述引用对得上 papers
-- [ ] 失败论文不阻断流程
+- [ ] `data/papers/` 有真实 PDF 文件（手动，需网络下真实 arxiv PDF）
+- [x] 每篇 analyses 字段完整（5 个字段都非空）
+- [x] 综述引用对得上 papers（Reviewer 校验 + synthesizer 约束）
+- [x] 失败论文不阻断流程（下载/解析失败降级到 abstract）
 
 ---
 

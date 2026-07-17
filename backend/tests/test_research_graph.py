@@ -38,6 +38,20 @@ FAKE_PAPERS = [
 
 SYNTH = "综述正文……方法见 [2401.00001]，趋势见 [2312.00002]。"
 
+REVIEW_JSON = json.dumps(
+    {
+        "covered_subquestions": ["子问题1", "子问题2"],
+        "citation_accuracy": "ok",
+        "issues": [],
+        "passed": True,
+    }
+)
+
+
+async def _fail_download(client, sem, paper, dest_dir):
+    """e2e 里跳过真实网络下载：全部标失败，触发 abstract 降级路径。"""
+    return paper, False
+
 
 def test_planner_parses_structured_output() -> None:
     import asyncio
@@ -72,7 +86,9 @@ def test_research_endpoint_e2e() -> None:
     with (
         patch("app.agents.nodes.planner.call_llm", new=AsyncMock(return_value=PLANNER_JSON)),
         patch("app.agents.nodes.searcher._search_one", return_value=FAKE_PAPERS),
+        patch("app.agents.nodes.downloader._download_one", new=_fail_download),
         patch("app.agents.nodes.synthesizer.call_llm", new=AsyncMock(return_value=SYNTH)),
+        patch("app.agents.nodes.reviewer.call_llm", new=AsyncMock(return_value=REVIEW_JSON)),
     ):
         r = client.post("/api/research", json={"query": "LLM 推理优化", "depth": "quick"})
     assert r.status_code == 200, r.text
@@ -102,13 +118,15 @@ def test_research_stream_emits_steps_and_final() -> None:
     with (
         patch("app.agents.nodes.planner.call_llm", new=AsyncMock(return_value=PLANNER_JSON)),
         patch("app.agents.nodes.searcher._search_one", return_value=FAKE_PAPERS),
+        patch("app.agents.nodes.downloader._download_one", new=_fail_download),
         patch("app.agents.nodes.synthesizer.call_llm", new=AsyncMock(return_value=SYNTH)),
+        patch("app.agents.nodes.reviewer.call_llm", new=AsyncMock(return_value=REVIEW_JSON)),
     ):
         r = client.post("/api/research/stream", json={"query": "LLM 推理优化", "depth": "quick"})
     assert r.status_code == 200
     text = r.text
-    # 三个节点各一条 step
-    for node in ("planner", "searcher", "synthesizer"):
+    # 六个节点各出现 step
+    for node in ("planner", "searcher", "downloader", "analyzer", "synthesizer", "reviewer"):
         assert f'"node": "{node}"' in text
     assert "event: final" in text
     assert SYNTH in text

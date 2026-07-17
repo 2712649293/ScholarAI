@@ -12,8 +12,10 @@ class ResearchState(TypedDict, total=False):
     max_papers: int
     sub_questions: list[str]
     search_queries: list[str]
-    papers: list[dict]  # arxiv 检索结果
-    analyses: list[dict]  # M4 才填，先空
+    papers: list[dict]  # arxiv 检索结果（M4 起含 local_path）
+    download_failures: list[str]  # 下载失败的 arxiv_id（M4.1）
+    analyses: list[dict]  # 逐篇结构化分析（M4.2）
     report_draft: str
-    feedback: str
+    feedback: str  # Reviewer 反馈（M4.3）
+    passed: bool  # Reviewer 是否通过（M4.3）
     iteration: int

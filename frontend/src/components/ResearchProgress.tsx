@@ -1,7 +1,10 @@
 const RESEARCH_STEPS = [
   { node: 'planner', label: '规划研究范围' },
   { node: 'searcher', label: '检索 arxiv' },
+  { node: 'downloader', label: '下载 PDF' },
+  { node: 'analyzer', label: '解析论文' },
   { node: 'synthesizer', label: '生成综述' },
+  { node: 'reviewer', label: '审校' },
 ]
 
 export function ResearchProgress({ done }: { done: Set<string> }) {
