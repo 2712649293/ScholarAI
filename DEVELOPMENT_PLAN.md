@@ -71,6 +71,7 @@ BGE_DEVICE=cpu                     # cpu | cuda | mps
 # Storage
 DATABASE_URL=sqlite:///./data/scholarai.db
 PAPER_STORAGE_DIR=./data/papers
+REPORTS_DIR=./data/reports         # 研究综述落盘目录
 CHROMA_PERSIST_DIR=./data/chroma
 UPLOAD_DIR=./data/uploads
 UPLOAD_MAX_SIZE_MB=50
@@ -565,9 +566,15 @@ class ResearchState(TypedDict):
       return g.compile()
   ```
 - `backend/app/api/research.py`：
-  - `POST /api/research` 接收 `{query, max_papers=20, session_id?}`
+  - `POST /api/research` 接收 `{query, max_papers=20, depth="normal", session_id?}`
   - 第一版**非流式**：用 `graph.invoke(state)` 一次性返回 `{report_markdown, papers}`
   - 创建/更新 Session(mode='research') 和 Message 记录
+  - **综述落盘**：写 `data/reports/{session_id}.md`（`REPORTS_DIR` 配置，默认 `./data/reports`），响应带 `report_path`；下载走静态返回该文件
+  - **depth 档位**（映射到检索规模，不引入新节点）：
+    - `quick`：max_papers≤8，searcher 每 query top-5，1 轮
+    - `normal`：max_papers≤20，top-10
+    - `deep`：max_papers≤40，top-15
+    - depth 只调 searcher 的 `max_results` 与 max_papers 上限，Synthesizer prompt 不变
 
 **测试**：
 - `tests/test_research_graph.py`：
@@ -629,7 +636,11 @@ class ResearchState(TypedDict):
 - 服务端每 15s 发一次心跳注释行 `: ping\n\n`（不触发前端 onEvent，纯粹保活）
 - `src/components/ResearchProgress.tsx`：步骤列表，每收到 `step` 事件点亮对应节点
 - `ChatPage` 加模式切换：`mode === 'research'` 时显示 ResearchProgress + 走流式端点
-- 报告完成后用 `react-markdown` 渲染，支持下载 .md
+- 报告完成后用 `react-markdown` 渲染；下载 .md 直接指向后端 `report_path`（§M3.3 已落盘），不在前端拼字符串
+- **侧边栏会话 mode 徽章**：`Sidebar.tsx` 每条会话按 `s.mode` 显示 `问答`/`研究` 小标签（M2.6.5 数据已就绪，研究模式落地后补渲染）
+
+> ponytail: **不做 token 级流式**（`event: token`）。综述最后随 `event: final` 一次性返回。
+> 打字机效果 UX 更好但要在 synthesizer 节点内透传 LLM token 流，复杂度高，留 v0.2。
 
 **验证**：
 - 端到端：前端输入"研究 LLM 推理优化" → 看到 3 步进度依次亮起 → 收到综述 markdown
@@ -825,22 +836,18 @@ services:
     build: ../backend
     env_file: ../.env
     ports: ["8000:8000"]
-    volumes: ["../data:/app/data"]
-    depends_on: [chroma]
-  
+    volumes: ["../data:/app/data"]   # Chroma 嵌入式，持久化随 data/ 卷
+
   frontend:
     build: ../frontend
     ports: ["5173:80"]
     depends_on: [backend]
-  
-  chroma:
-    image: chromadb/chroma:latest
-    ports: ["8001:8000"]
-    volumes: ["chroma_data:/chroma/chroma"]
-
-volumes:
-  chroma_data:
 ```
+
+> ponytail: **不起独立 chroma 容器**。后端用嵌入式 `PersistentClient` 直接读写 `data/chroma/`，
+> 容器化只需把 `data/` 挂进去。多 worker/多副本扩展时再切 client-server（见 §12.10）。
+> 单 worker 部署：`uvicorn app.main:app --host 0.0.0.0 --port 8000`（**不加 `--workers`**，
+> 嵌入式 Chroma 多进程写同一目录会冲突）。
 
 ### M6.3 一键启动验证
 ```bash
@@ -1106,6 +1113,14 @@ class UploadConstraints:
 | 2026-07-16 | 研究模式同 session 串行 | DB 唯一约束，避免重复研究浪费 token |
 | 2026-07-16 | LangGraph 用 MemorySaver 起，留接口切 Postgres | 第一版单机够，后期零业务代码升级 |
 | 2026-07-16 | LangSmith 采样率 env 控制 | dev 1.0 / prod 0.1，平衡 debug 与额度 |
+| 2026-07-16 | 设置页 `/settings` 推迟 v0.2 | 单人开发，配置走 `.env`/`apikey.txt` 够用 |
+| 2026-07-16 | QA 模式保持简单 RAG，不做 ReAct agent | 检索→拼 context→LLM 已满足；web/arxiv 工具留 v0.2 |
+| 2026-07-16 | Chroma 用嵌入式 `PersistentClient` + **单 worker** | 单机单人 YAGNI；多 worker 需切 HttpClient（升级路径见 §12.10）|
+| 2026-07-16 | M6 compose 删掉独立 `chroma` 容器 | 嵌入式模式下容器用不上，避免误导 |
+| 2026-07-16 | 研究综述只做 step+final，不做 token 流式 | 实现简单；打字机效果留 v0.2 |
+| 2026-07-16 | 综述额外落盘 `data/reports/{session_id}.md` | 方便下载/缓存/复盘 |
+| 2026-07-16 | M5 不做 OpenTelemetry | LangSmith 覆盖 LLM trace，structlog+Prometheus 覆盖应用层 |
+| 2026-07-16 | RAG 不做 MMR 重排；长文不做 Map-Reduce | 先 cosine top-k + 截断前 8000 token，质量不够再升级 |
 
 ---
 
@@ -1272,6 +1287,31 @@ M1 起步时写的 `README.md` 应包含：
 4. 开发路线（指向 DEVELOPMENT_PLAN.md）
 
 不要在 M1 写完美 README，骨架就够，发布前再补。
+
+### 12.10 未来扩展 · Chroma 切 client-server（多 worker / 多副本）
+
+> 现在不做。触发条件：需要 `uvicorn --workers N`、多容器副本，或向量数据要独立于后端生命周期。
+
+嵌入式 `PersistentClient` 的限制：多进程写同一目录会冲突，所以生产单 worker。要扩展时按下面切，**业务代码零改动**（只动 `vector_store.py` + config + compose）：
+
+1. `config.py` 加 `chroma_host: str = ""`、`chroma_port: int = 8000`
+2. `vector_store.py` 的 `get_client()`：
+   ```python
+   if settings.chroma_host:
+       return chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port)
+   return chromadb.PersistentClient(path=settings.chroma_persist_dir)  # 降级：本地开发
+   ```
+3. compose 加回 chroma 服务：
+   ```yaml
+   chroma:
+     image: chromadb/chroma:latest
+     ports: ["8001:8000"]
+     volumes: ["chroma_data:/chroma/chroma"]
+   volumes:
+     chroma_data:
+   ```
+   backend 加 `environment: [CHROMA_HOST=chroma]` + `depends_on: [chroma]`，即可 `--workers N`。
+4. 云端可进一步换托管向量库（Pinecone/阿里云），仅替换 `get_client()` 实现。
 
 ---
 
