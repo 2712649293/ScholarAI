@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from app.db.models import MessageModel, SessionModel
 from app.db.session import SessionLocal
@@ -55,6 +56,8 @@ class DBSessionStore:
             # M2.6.2: 首条用户消息截前 20 字作标题（不用 LLM，省 token）
             if role == "user" and s.title == "新对话":
                 s.title = content[:20]
+            # 每条消息都 bump updated_at，侧边栏才能按最近活跃排序
+            s.updated_at = datetime.now(timezone.utc)
             db.commit()
 
     def recent(self, session_id: str, n: int = 10) -> list[Message]:

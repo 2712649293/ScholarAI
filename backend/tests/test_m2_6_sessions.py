@@ -66,6 +66,17 @@ def test_delete_session_cascades_messages() -> None:
     assert store.recent(sid, n=20) == []
 
 
+def test_active_session_bubbles_to_top() -> None:
+    """加消息应 bump updated_at，活跃会话重新排到列表顶部（修 updated_at 冻结 bug）。"""
+    a = store.get_or_create(None)
+    store.add_message(a.id, "user", "会话A首条")
+    b = store.get_or_create(None)
+    store.add_message(b.id, "user", "会话B首条")  # 此刻 b 比 a 新
+    store.add_message(a.id, "assistant", "A 的新活动")  # 非首条，仍要 bump
+    ids = [r["id"] for r in client.get("/api/sessions").json()]
+    assert ids.index(a.id) < ids.index(b.id)
+
+
 def test_get_missing_session_404() -> None:
     r = client.get("/api/sessions/deadbeef")
     assert r.status_code == 404
