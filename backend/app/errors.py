@@ -34,3 +34,7 @@ class ResourceLimitExceeded(ScholarAIError):
 
 class SessionNotFound(ScholarAIError):
     code, status_code = "session_not_found", 404
+
+
+class ArxivFetchFailed(ScholarAIError):
+    code, status_code = "arxiv_fetch_failed", 502

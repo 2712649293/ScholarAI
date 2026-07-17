@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
 from app import __version__  # noqa: E402
-from app.api import chat, knowledge, sessions  # noqa: E402
+from app.api import chat, knowledge, research, sessions  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.errors import ScholarAIError  # noqa: E402
 
@@ -63,6 +63,7 @@ async def unhandled_handler(request: Request, exc: Exception):
 app.include_router(chat.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(research.router, prefix="/api")
 
 
 @app.get("/health")

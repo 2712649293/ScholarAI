@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Storage
     database_url: str = "sqlite:///./data/scholarai.db"
     paper_storage_dir: str = "./data/papers"
+    reports_dir: str = "./data/reports"
     chroma_persist_dir: str = "./data/chroma"
     upload_dir: str = "./data/uploads"
     upload_max_size_mb: int = 50
