@@ -783,13 +783,20 @@ ReAct 完全依赖模型工具调用能力。`deepseek-v4-flash` 若 function ca
 
 ## 6. M5 · 可观测性
 
+> ⚠️ **架构对齐（M4.5 后）**：研究模式已从"固定 6 节点图"改成 `create_agent` ReAct agent。
+> 原 M5.1/M5.3 里"每个 node 入口/出口打点""node 计时"的写法不再适用（没有可插桩的固定节点）。
+> 改为统一用 **LangChain 回调处理器**（`BaseCallbackHandler`）挂到 agent：
+> - `on_tool_start/on_tool_end` → 记录/计时每次工具调用（"node" 维度 = tool 名）
+> - `on_llm_end` → 从 `response.llm_output` / message 的 `usage_metadata` 抓 token（DeepSeek 走 OpenAI 兼容字段，不用 `get_openai_callback`）
+> 回调在 `build_agent` 时传入 `config={"callbacks":[handler]}`，request_id 通过 handler 闭包/contextvar 绑定。
+
 
 ### M5.1 structlog 结构化日志
 **文件**：`backend/app/observability/logging.py`
 - JSON 格式输出到 stdout
-- 绑定 `request_id` / `session_id` / `node_name` 上下文
+- 绑定 `request_id` / `session_id` / `tool_name` 上下文
 - FastAPI middleware：从 header `X-Request-ID` 读，没有就生成
-- 每个 agent 节点入口 `log.info("node.start", node=name)`，出口 `log.info("node.end", duration=...)`
+- 用回调处理器在 `on_tool_start/on_tool_end` 打点 `tool.start` / `tool.end`（duration），`on_llm_end` 打 `llm.call`（tokens）
 
 **验证**：
 - 一次 `/api/research` 请求 → 日志是 JSON 行，含 request_id 串起所有 node
@@ -806,7 +813,7 @@ def setup_tracing():
         os.environ["LANGCHAIN_PROJECT"] = settings.langsmith_project
 ```
 - `app/main.py` 启动时调用 `setup_tracing()`
-- 验证：开 LANGSMITH_TRACING=true 跑一次研究请求 → LangSmith UI 能看到完整 trace（含 6 个 node + LLM 调用）
+- 验证：开 LANGSMITH_TRACING=true 跑一次研究请求 → LangSmith UI 能看到完整 trace（agent + 各 tool 调用 + LLM）
 - 不开也不报错（优雅降级）
 
 ### M5.3 Prometheus 指标
@@ -819,8 +826,8 @@ LLM_TOKENS = Counter("scholarai_llm_tokens_total", "LLM tokens", ["model","type"
 NODE_DURATION = Histogram("scholarai_node_duration_seconds", "Node duration", ["node"])
 ```
 - 加 FastAPI middleware 自动计 REQUESTS / DURATION
-- LangChain callback handler 抓 LLM token 用量（`get_openai_callback` 或自定义）
-- 节点计时用 `time.perf_counter()` 包在 node 函数外
+- 回调处理器 `on_llm_end` 抓 LLM token（读 `usage_metadata`，DeepSeek 兼容 OpenAI 字段；不用 `get_openai_callback`）
+- 工具计时：回调 `on_tool_start/on_tool_end`，`NODE_DURATION` 的 label `node` = tool 名
 
 **端点**：
 - `app/main.py` 加 `GET /metrics` 返回 `generate_latest()`
@@ -841,8 +848,8 @@ curl http://localhost:8000/metrics
 
 **M5 退出检查**：
 - [ ] 日志 JSON 格式、含 request_id
-- [ ] LangSmith（如果开）能看到 6 个 node
-- [ ] `/metrics` 暴露关键指标
+- [ ] LangSmith（如果开）能看到 agent + 各 tool 调用 + LLM
+- [ ] `/metrics` 暴露关键指标（含 `scholarai_llm_tokens_total`、按 tool 的耗时）
 - [ ] 一次研究请求能完整 trace 回放
 
 ---

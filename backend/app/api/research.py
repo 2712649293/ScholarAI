@@ -92,6 +92,7 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
             pass  # 到步数上限，用已有 draft 收尾
         except Exception as e:  # noqa: BLE001
             yield _sse("error", {"code": "internal_error", "message": str(e)})
+            return  # 硬错误：只报错，不再发 final（避免前端错误+空综述双显示）
 
         report, report_path = _finalize(session.id, ctx)
         yield _sse(
