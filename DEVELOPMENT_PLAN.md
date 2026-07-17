@@ -649,10 +649,11 @@ class ResearchState(TypedDict):
 ✅ → **打 tag v0.1.0-m3**
 
 **M3 退出检查**：
-- [ ] `/api/research` 同步端点通
-- [ ] `/api/research/stream` SSE 通，前端能看到进度
-- [ ] 综述含 `[arxiv_id]` 引用
-- [ ] 论文数据写入 Session.messages（可查历史）
+- [x] `/api/research` 同步端点通
+- [x] `/api/research/stream` SSE 通，前端能看到进度
+- [x] 综述含 `[arxiv_id]` 引用（synthesizer prompt 约束）
+- [x] 论文数据写入 Session.messages（可查历史）
+- [ ] 真实 DeepSeek + arxiv 端到端联调（手动，需网络+token）
 
 ---
 

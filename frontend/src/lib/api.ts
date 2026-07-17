@@ -196,3 +196,67 @@ export function deleteSession(id: string): Promise<void> {
 export function updateSession(id: string, title: string): Promise<SessionSummary> {
   return patchJson<SessionSummary>(`/api/sessions/${id}`, { title })
 }
+
+// === Research（M3.4，SSE 流式） ===
+
+export interface ResearchPaper {
+  arxiv_id: string
+  title: string
+  authors: string[]
+  year: number
+  abstract: string
+  pdf_url?: string | null
+}
+
+export interface ResearchFinal {
+  session_id: string
+  report_markdown: string
+  report_path: string
+  papers: ResearchPaper[]
+}
+
+export interface ResearchBody {
+  query: string
+  session_id?: string
+  depth?: 'quick' | 'normal' | 'deep'
+  max_papers?: number
+}
+
+// 浏览器原生 EventSource 只支持 GET；研究接口是 POST+body，自己用 fetch 解析 SSE。
+// 返回一个取消函数（组件卸载 / 用户中止时调用）。
+export function researchStream(
+  body: ResearchBody,
+  onEvent: (event: string, data: unknown) => void,
+): () => void {
+  const ctrl = new AbortController()
+  ;(async () => {
+    const res = await fetch('/api/research/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        let event = 'message'
+        let data = ''
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        if (data) onEvent(event, JSON.parse(data))
+      }
+    }
+  })().catch((err) => onEvent('error', { message: String(err) }))
+  return () => ctrl.abort()
+}

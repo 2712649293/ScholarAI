@@ -67,7 +67,14 @@ export function Sidebar() {
               }`}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate">{s.title || '新对话'}</span>
+                <span className="flex items-center gap-1">
+                  <span className="truncate">{s.title || '新对话'}</span>
+                  {s.mode === 'research' && (
+                    <span className="shrink-0 rounded bg-purple-100 px-1 text-[10px] text-purple-600">
+                      研究
+                    </span>
+                  )}
+                </span>
                 <span className="block text-xs text-zinc-400">{relTime(s.updated_at)}</span>
               </span>
               <span

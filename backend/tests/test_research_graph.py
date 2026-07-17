@@ -96,3 +96,20 @@ def test_research_endpoint_no_papers_still_returns() -> None:
     assert r.status_code == 200
     assert r.json()["papers"] == []
     assert "未检索到" in r.json()["report_markdown"]
+
+
+def test_research_stream_emits_steps_and_final() -> None:
+    with (
+        patch("app.agents.nodes.planner.call_llm", new=AsyncMock(return_value=PLANNER_JSON)),
+        patch("app.agents.nodes.searcher._search_one", return_value=FAKE_PAPERS),
+        patch("app.agents.nodes.synthesizer.call_llm", new=AsyncMock(return_value=SYNTH)),
+    ):
+        r = client.post("/api/research/stream", json={"query": "LLM 推理优化", "depth": "quick"})
+    assert r.status_code == 200
+    text = r.text
+    # 三个节点各一条 step
+    for node in ("planner", "searcher", "synthesizer"):
+        assert f'"node": "{node}"' in text
+    assert "event: final" in text
+    assert SYNTH in text
+

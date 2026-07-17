@@ -3,12 +3,13 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { ChatPanel } from './ChatPanel'
-import { chatQA } from '@/lib/api'
+import { chatQA, researchStream } from '@/lib/api'
 
 vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
   listKBs: vi.fn().mockResolvedValue([]),
   getSession: vi.fn().mockResolvedValue({ messages: [] }),
+  researchStream: vi.fn(),
   ApiError: class extends Error {},
 }))
 
@@ -71,5 +72,27 @@ describe('ChatPanel', () => {
     })
     expect(screen.getByText('[1] doc-abc p.3')).toBeInTheDocument()
     expect(screen.getByText('[2] doc-def p.1')).toBeInTheDocument()
+  })
+
+  it('research mode: streams steps then renders markdown report', async () => {
+    vi.mocked(researchStream).mockImplementation((_body, onEvent) => {
+      onEvent('step', { node: 'planner' })
+      onEvent('final', {
+        session_id: 'sess-r',
+        report_markdown: '# 综述标题\n正文内容',
+        report_path: 'data/reports/sess-r.md',
+        papers: [],
+      })
+      return () => {}
+    })
+    const user = userEvent.setup()
+    renderPanel()
+    await user.click(screen.getByRole('button', { name: '研究模式' }))
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'LLM 推理{Enter}')
+    await waitFor(() => {
+      expect(screen.getByText('综述标题')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: '下载 .md' })).toBeInTheDocument()
+    expect(vi.mocked(researchStream)).toHaveBeenCalled()
   })
 })
