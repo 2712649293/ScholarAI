@@ -12,6 +12,7 @@ from langgraph.errors import GraphRecursionError
 from app.agents.context import ResearchContext
 from app.agents.research_agent import RECURSION_LIMIT, build_agent
 from app.config import settings
+from app.observability.callbacks import HANDLER
 from app.schemas.research import PaperOut, ResearchRequest, ResearchResponse
 from app.session_store import store
 
@@ -20,6 +21,7 @@ router = APIRouter(prefix="/research", tags=["research"])
 # depth 档位 → max_papers 上限（§M3.3 depth 映射）
 DEPTH_CAP = {"quick": 8, "normal": 20, "deep": 40}
 NO_REPORT = "（未能生成综述，可能未检索到相关论文）"
+_AGENT_CONFIG = {"recursion_limit": RECURSION_LIMIT, "callbacks": [HANDLER]}
 
 
 def _sse(event: str, data: dict) -> str:
@@ -56,7 +58,7 @@ async def start_research(req: ResearchRequest) -> ResearchResponse:
     agent = build_agent(ctx)
     try:
         await agent.ainvoke(
-            {"messages": [("user", req.query)]}, config={"recursion_limit": RECURSION_LIMIT}
+            {"messages": [("user", req.query)]}, config=_AGENT_CONFIG
         )
     except GraphRecursionError:
         pass  # 到步数上限，用已生成的 draft 收尾
@@ -82,7 +84,7 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
             async for chunk in agent.astream(
                 {"messages": [("user", req.query)]},
                 stream_mode="updates",
-                config={"recursion_limit": RECURSION_LIMIT},
+                config=_AGENT_CONFIG,
             ):
                 for update in (chunk or {}).values():
                     for m in (update or {}).get("messages", []):

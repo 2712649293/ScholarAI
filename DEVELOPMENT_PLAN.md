@@ -847,10 +847,10 @@ curl http://localhost:8000/metrics
 ✅ → **打 tag v0.1.0-m5**
 
 **M5 退出检查**：
-- [ ] 日志 JSON 格式、含 request_id
-- [ ] LangSmith（如果开）能看到 agent + 各 tool 调用 + LLM
-- [ ] `/metrics` 暴露关键指标（含 `scholarai_llm_tokens_total`、按 tool 的耗时）
-- [ ] 一次研究请求能完整 trace 回放
+- [x] 日志 JSON 格式、含 request_id
+- [x] LangSmith（如果开）能看到 agent + 各 tool 调用 + LLM（env vars 路径，trace 由 langchain 自动出）
+- [x] `/metrics` 暴露关键指标（含 `scholarai_llm_tokens_total`、按 tool 的耗时）
+- [ ] 一次研究请求能完整 trace 回放（手动，需真跑 LLM + 联网）
 
 ---
 

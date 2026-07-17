@@ -47,8 +47,12 @@ async def call_llm(messages: list[Any], *, timeout: float | None = None) -> str:
     """异步调 LLM，返回文本结果。带超时 + 3 次重试。"""
     llm = get_llm()
     t = timeout or settings.llm_timeout_seconds
+    from app.observability.callbacks import HANDLER  # 局部导入避免循环
+
     try:
-        result = await asyncio.wait_for(llm.ainvoke(messages), timeout=t)
+        result = await asyncio.wait_for(
+            llm.ainvoke(messages, config={"callbacks": [HANDLER]}), timeout=t
+        )
         return result.content if hasattr(result, "content") else str(result)
     except asyncio.TimeoutError as e:
         raise LLMTimeout(f"LLM 调用超时（{t}s）") from e
