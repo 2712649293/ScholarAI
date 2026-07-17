@@ -711,6 +711,9 @@ g.add_conditional_edges("reviewer", lambda s: END if s.get("pass") or s.get("ite
 # synthesizer 节点收到 feedback 时把 feedback 拼进 prompt
 ```
 
+> **iteration 自增**：synthesizer 每次运行时 `iteration = state.get("iteration",0)+1` 并返回。
+> 这样条件边 `iteration>=2` 才有单一、正确的计数来源（reviewer 只读不写）。
+
 ### M4.4 端到端验证
 - 选一个有 10+ 引用的小众方向（如 "neural network pruning 2024"）
 - 跑完整流程：planner → searcher → downloader → analyzer → synthesizer → reviewer
@@ -813,6 +816,12 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
+
+> ⚠️ **BGE 模型必须预置进镜像**：进程启动强制 `HF_HUB_OFFLINE=1`，运行时不会联网拉模型。
+> 否则容器一启动就因找不到 `BAAI/bge-small-zh-v1.5` 而崩。两种做法（选其一）：
+> 1. build 阶段预下载：`RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5')"`（镜像 +~100MB，但自包含、离线可跑）
+> 2. 运行时挂载宿主 HF cache 卷：`volumes: ["~/.cache/huggingface:/root/.cache/huggingface"]`（镜像小，但依赖宿主已下载）
+> 推荐 **做法 1**（镜像自包含，符合"新机器 5 分钟拉起"目标）。
 
 **前端**：`frontend/Dockerfile`
 ```dockerfile
@@ -1122,6 +1131,9 @@ class UploadConstraints:
 | 2026-07-16 | 综述额外落盘 `data/reports/{session_id}.md` | 方便下载/缓存/复盘 |
 | 2026-07-16 | M5 不做 OpenTelemetry | LangSmith 覆盖 LLM trace，structlog+Prometheus 覆盖应用层 |
 | 2026-07-16 | RAG 不做 MMR 重排；长文不做 Map-Reduce | 先 cosine top-k + 截断前 8000 token，质量不够再升级 |
+| 2026-07-16 | 研究并发控制（§12.8）推迟 v0.2 | 单人 dev 不会自撞；防重复提交价值不高 |
+| 2026-07-16 | 前端 depth 先写死 `normal`，不暴露选择器 | v1 完整跑通、摸清 deep 成本后再评估是否开放给用户 |
+| 2026-07-16 | Reviewer 循环的 `iteration` 由 synthesizer 每次运行 +1 | 单一自增点，避免重复计数 |
 
 ---
 
