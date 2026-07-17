@@ -1,17 +1,18 @@
 """BGE embedding 封装（BAAI/bge-small-zh-v1.5，本地 CPU）。"""
 from __future__ import annotations
 
-# ponytail: 必须在 import sentence_transformers 之前设好 OFFLINE，
-# 否则首次 load 会联网 check 更新，失败就 RuntimeError
+# ponytail: 必须在 import sentence_transformers 之前强制设 OFFLINE。
+# 用 = 而不是 setdefault，因为 shell 可能设了 HF_HUB_OFFLINE=0 / 空。
+# 同时也覆盖 TRANSFORMERS_OFFLINE（transformers 库读这个）。
 import os
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-from functools import lru_cache
+from functools import lru_cache  # noqa: E402
 
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer  # noqa: E402
 
-from app.config import settings
+from app.config import settings  # noqa: E402
 
 
 @lru_cache(maxsize=1)

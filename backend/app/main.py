@@ -1,16 +1,21 @@
 """FastAPI 应用入口。"""
 from __future__ import annotations
 
+import os
 import uuid
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+# ponytail: 进程一启动就强制 HF 离线，避免 BGE 模型加载时联网拉 adapter_config.json
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-from app import __version__
-from app.api import chat, knowledge
-from app.config import settings
-from app.errors import ScholarAIError
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from app import __version__  # noqa: E402
+from app.api import chat, knowledge  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.errors import ScholarAIError  # noqa: E402
 
 app = FastAPI(
     title="ScholarAI",

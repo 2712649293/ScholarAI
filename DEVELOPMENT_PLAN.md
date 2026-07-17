@@ -122,6 +122,7 @@ test-fe:
 |------|------|--------------|----------|
 | **M1** | 骨架：前后端跑通单轮问答 | 4 | 前端输入 → DeepSeek 回话 |
 | **M2** | 知识库 + Chroma RAG | 5 | 上传 PDF → 问答带出处 |
+| **M2.6** | 对话记录持久化 + 侧边栏 | 8 | 重启不丢 + 侧边栏能看历史 |
 | **M3** | 研究模式 v1：3 节点（abstract 综述） | 4 | 给方向 → 拿到 abstract 级综述 |
 | **M4** | 研究模式 v2：下载 + PDF 解析 | 4 | 给方向 → 拿到论文级综述 |
 | **M5** | 可观测性 | 4 | LangSmith 看得到 trace，`/metrics` 暴露 |
@@ -443,6 +444,61 @@ curl -X POST http://localhost:8000/api/knowledge/<kb_id>/search -H 'Content-Type
 - [ ] 问答引用标注正确
 - [ ] 4 个表都有，alembic 迁移可重放
 - [ ] Chroma 数据持久化（重启不丢）
+
+---
+
+## 3.5 M2.6 · 对话记录持久化 + 侧边栏会话列表
+
+> **背景**：M1.4 用 `InMemorySessionStore` 临时存 session，进程重启数据丢失。侧边栏「对话」模块一直空着。本节把会话从内存迁到 DB，并补完整 UI。
+
+### M2.6.1 把 session_store 切到 DB
+- `backend/app/session_store.py` 改用 `SessionModel` + `MessageModel`（已存在）
+- 保留 `get_or_create / recent / add_message` 同样接口 → 其它代码（chat.py）零改动
+- 启动时从 DB 加载已有 session 到内存缓存（避免每次查 DB）
+- 写消息时同步刷到 DB（写穿透）
+
+**关键**：用 SQLAlchemy 同步 Session 即可（与 M2.1 决策一致），FastAPI sync handler 在线程池跑
+
+### M2.6.2 Session 标题自动生成
+- 新 session 第一条消息进来时：截前 20 字作 title（**不用 LLM，省 token**）
+- 用户可手动重命名（M2.6.5）
+
+### M2.6.3 Sessions API
+```
+GET    /api/sessions              # 列表（含 message_count 预览）
+GET    /api/sessions/{id}         # 详情 + 消息历史
+DELETE /api/sessions/{id}         # 删 session（级联删 messages）
+PATCH  /api/sessions/{id}         # 改 title
+```
+文件：`backend/app/api/sessions.py` + `backend/app/schemas/session.py`
+
+### M2.6.4 前端 Session 列表 API
+- `src/lib/api.ts` 加 `listSessions / getSession / deleteSession / updateSession`
+- 测试 4 个 happy path
+
+### M2.6.5 前端 Sidebar 对话列表
+- 把 `Sidebar.tsx` 的「对话」NavLink 改成可展开列表
+- 用 `useEffect` 拉 `/api/sessions`，渲染每条：title + 相对时间
+- 每条 hover 显示删除按钮（trash icon）
+- 当前 session 高亮
+- 「+ 新对话」按钮：导航到 `/chat`（不带 session_id 触发新 session）
+
+### M2.6.6 前端 ChatPanel 加载历史
+- `useParams<{ sessionId?: string }>()` 拿路由里的 sessionId
+- 第一次 mount：如果有 sessionId → 调 `getSession` 拉历史消息塞进 state
+- 切到新 session：清空 state 后再拉
+- 没 sessionId：保持原行为（新对话）
+
+### M2.6.7 路由 + 整合
+- `App.tsx`：`<Route path="/chat" />` 和 `<Route path="/chat/:sessionId" />` 都用 ChatPage
+- ChatPage 把 sessionId 透传给 ChatPanel
+
+### M2.6.8 退出检查
+- [ ] session 写入 DB，重启后端不丢
+- [ ] Sidebar「对话」显示列表，能点开旧 session
+- [ ] 能删除 session
+- [ ] /chat/:id 路由能加载历史消息
+- [ ] 标题自动生成（无 LLM 调用）
 
 ---
 
