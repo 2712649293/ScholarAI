@@ -1186,6 +1186,8 @@ class UploadConstraints:
 | 2026-07-16 | 研究并发控制（§12.8）推迟 v0.2 | 单人 dev 不会自撞；防重复提交价值不高 |
 | 2026-07-16 | 前端 depth 先写死 `normal`，不暴露选择器 | v1 完整跑通、摸清 deep 成本后再评估是否开放给用户 |
 | 2026-07-16 | Reviewer 循环的 `iteration` 由 synthesizer 每次运行 +1 | 单一自增点，避免重复计数 |
+| 2026-07-17 | 研究综述 `.md` 文件名加唯一后缀 | 同一 session 多次研究不互相覆盖（M4.5 实测发现） |
+| 2026-07-17 | 研究模式跨轮记忆（聊天追问）列为 v0.2 首要 | M4.5 实测：追问因每请求新建 context 而失败；见 §12.11 |
 
 ---
 
@@ -1377,6 +1379,22 @@ M1 起步时写的 `README.md` 应包含：
    ```
    backend 加 `environment: [CHROMA_HOST=chroma]` + `depends_on: [chroma]`，即可 `--workers N`。
 4. 云端可进一步换托管向量库（Pinecone/阿里云），仅替换 `get_client()` 实现。
+
+### 12.11 ⭐ v0.2 首要：研究模式支持聊天追问（跨轮记忆）
+
+> **来源**：M4.5 上线后实测发现。用户在同一会话里追问"帮我下载这几篇论文"，agent 完全没上一轮的上下文，直接失败。
+
+**现状**：每个 `/api/research` 请求新建 `ResearchContext`（为并发安全，本身正确），但**不注入会话历史**——每次研究都是独立一次性任务，不支持"接着上次继续"。
+
+**目标**：研究模式能像聊天一样追问（"再多找几篇 2024 的"/"重点分析第 3 篇"/"下载这些"）。
+
+**候选方案（v0.2 设计时定）**：
+1. **checkpointer + thread_id**：`create_agent(..., checkpointer=MemorySaver())`，invoke 传 `config={"configurable":{"thread_id": session_id}}` → agent 原生记住本 thread 的消息/工具历史。但 `ResearchContext`（papers/draft）是每请求内存对象，checkpointer 只恢复消息不恢复它 → 需把 papers/analyses/draft **搬进 agent state**（随 checkpointer 持久化），或每轮从历史重建 ctx。
+2. **ctx 持久化到 DB**：把上一轮的 papers/analyses/draft 存 DB，新请求按 session_id 载回填进 ctx。改动小但要自己管理状态一致性。
+
+**优先级**：**v0.2 第一件事**（比其他 v0.2 项都靠前）。牵扯 context 持久化 + 并发，值得单独设计，不塞进 v0.1。
+
+**v0.1 临时表现**：研究模式每次都是独立新研究；前端可加一句提示"研究模式暂不支持追问，每次为独立任务"。
 
 ---
 

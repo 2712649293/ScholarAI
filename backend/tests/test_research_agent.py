@@ -89,6 +89,25 @@ def test_agent_full_run_produces_report() -> None:
     assert Path(body["report_path"]).read_text(encoding="utf-8") == SYNTH
 
 
+def test_two_researches_same_session_do_not_overwrite_report() -> None:
+    """同一 session 跑两次研究，report 文件不互相覆盖（修问题2）。"""
+    from pathlib import Path
+
+    p1, p2, p3, p4, p5 = _patches(_full_run_script())
+    with p1, p2, p3, p4, p5:
+        r1 = client.post("/api/research", json={"query": "方向A", "depth": "quick"})
+    sid = r1.json()["session_id"]
+    path1 = r1.json()["report_path"]
+
+    q1, q2, q3, q4, q5 = _patches(_full_run_script())
+    with q1, q2, q3, q4, q5:
+        r2 = client.post("/api/research", json={"query": "方向B", "session_id": sid})
+    path2 = r2.json()["report_path"]
+
+    assert path1 != path2  # 不同文件
+    assert Path(path1).read_text(encoding="utf-8") == SYNTH  # 第一份仍在
+
+
 def test_agent_stream_emits_tool_steps_and_final() -> None:
     p1, p2, p3, p4, p5 = _patches(_full_run_script())
     with p1, p2, p3, p4, p5:

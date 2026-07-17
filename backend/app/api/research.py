@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -33,7 +34,8 @@ def _new_context(req: ResearchRequest) -> ResearchContext:
 def _save_report(session_id: str, report: str) -> str:
     reports_dir = Path(settings.reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    path = reports_dir / f"{session_id}.md"
+    # 唯一后缀：同一 session 多次研究不互相覆盖（历史都留档）
+    path = reports_dir / f"{session_id}_{uuid.uuid4().hex[:8]}.md"
     path.write_text(report, encoding="utf-8")
     return str(path)
 
