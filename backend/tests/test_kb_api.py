@@ -113,3 +113,37 @@ def test_upload_valid_pdf_and_search() -> None:
 def test_search_on_nonexistent_kb_404() -> None:
     r = client.post("/api/knowledge/nonexistent-id-xxx/search", json={"query": "x", "k": 3})
     assert r.status_code == 404
+
+
+def test_upload_pdf_with_no_text_marks_failed() -> None:
+    """PDF 解析成功但抽不到文本（扫描件/图片）→ 0 chunk → 标 failed 不标 indexed。"""
+    r = client.post("/api/knowledge", json={"name": f"kb-notext-{time.time_ns()}"})
+    kid = r.json()["id"]
+    try:
+        # 用 pymupdf 生成纯图片 PDF（无文本层）
+        doc = pymupdf.open()
+        page = doc.new_page(width=200, height=200)
+        # 画一个矩形 + 文字作为图片，pdfplumber 抽不出文本
+        page.draw_rect((50, 50, 150, 150), color=(1, 0, 0), fill=(1, 0, 0))
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        r = client.post(
+            f"/api/knowledge/{kid}/docs",
+            files={"file": ("scan.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert r.status_code == 201
+        doc_id = r.json()["id"]
+
+        # 等后台完成
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            r = client.get(f"/api/knowledge/{kid}/docs/{doc_id}")
+            if r.json()["status"] in ("indexed", "failed"):
+                break
+            time.sleep(0.3)
+        body = r.json()
+        assert body["status"] == "failed", f"0-chunk PDF 应标 failed，实际：{body}"
+        assert "未提取到文本" in body.get("error", "")
+    finally:
+        client.delete(f"/api/knowledge/{kid}")

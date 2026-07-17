@@ -51,9 +51,14 @@ def _index_pdf_task(doc_id: str, kb_id: str, pdf_path: str) -> None:
             res = indexer.index_pdf(kb_id, pdf_path, doc_id=doc_id)
             doc = db.get(Document, doc_id)
             if doc is not None:
-                doc.status = "indexed"
-                doc.page_count = res.page_count
-                doc.indexed_at = datetime.now(timezone.utc)
+                if res.chunk_count == 0:
+                    # 0 chunk = 解析失败（可能是扫描件 / 加密 / 抽不出文本）
+                    doc.status = "failed"
+                    doc.error = "PDF 解析成功但未提取到文本（可能是扫描件或加密 PDF）"
+                else:
+                    doc.status = "indexed"
+                    doc.page_count = res.page_count
+                    doc.indexed_at = datetime.now(timezone.utc)
             kb = db.get(KnowledgeBase, kb_id)
             if kb is not None:
                 kb.doc_count = db.query(Document).filter_by(kb_id=kb_id).count()
@@ -139,6 +144,9 @@ async def upload_doc(
     db.add(doc)
     db.commit()
     db.refresh(doc)
+    # 立即同步 doc_count，避免列表看到 0
+    kb.doc_count = db.query(Document).filter_by(kb_id=kb_id).count()
+    db.commit()
     background.add_task(_index_pdf_task, doc_id, kb_id, str(target))
     return doc
 
