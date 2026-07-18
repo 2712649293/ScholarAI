@@ -16,7 +16,7 @@ from app.observability.callbacks import HANDLER
 from app.schemas.research import PaperOut, ResearchRequest, ResearchResponse
 from app.session_store import store
 
-router = APIRouter(prefix="/research", tags=["research"])
+router = APIRouter(prefix="/api/research", tags=["research"])
 
 # depth 档位 → max_papers 上限（§M3.3 depth 映射）
 DEPTH_CAP = {"quick": 8, "normal": 20, "deep": 40}

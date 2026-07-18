@@ -15,7 +15,7 @@ from app.schemas.session import (
     SessionUpdate,
 )
 
-router = APIRouter(prefix="/sessions", tags=["sessions"])
+router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def _not_found() -> SessionNotFound:

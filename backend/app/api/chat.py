@@ -19,7 +19,7 @@ MAX_CITATIONS = 5  # 单次回复最多带 5 条引用
 router = ...  # placeholder
 from fastapi import APIRouter  # noqa: E402
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 def _build_rag_context(kb_ids: list[str], query: str) -> tuple[str, list[Citation]]:

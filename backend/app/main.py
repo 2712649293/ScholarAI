@@ -81,10 +81,10 @@ async def unhandled_handler(request: Request, exc: Exception):
     )
 
 
-app.include_router(chat.router, prefix="/api")
-app.include_router(knowledge.router, prefix="/api")
-app.include_router(sessions.router, prefix="/api")
-app.include_router(research.router, prefix="/api")
+app.include_router(chat.router)
+app.include_router(knowledge.router)
+app.include_router(sessions.router)
+app.include_router(research.router)
 
 
 @app.get("/metrics")

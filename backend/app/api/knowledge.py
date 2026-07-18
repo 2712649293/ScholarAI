@@ -21,7 +21,7 @@ from app.schemas.knowledge import (
     SearchRequest,
 )
 
-router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 PDF_MAGIC = b"%PDF-"
 CHUNK_SIZE = 1024 * 1024  # 1MB 读块
