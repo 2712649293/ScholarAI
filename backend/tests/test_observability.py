@@ -17,6 +17,24 @@ client = TestClient(app)
 
 # === /metrics 端点 ===
 
+def test_health_live_always_200() -> None:
+    """liveness 探针：进程在就 200，不依赖任何外部（§8.5）。"""
+    r = client.get("/health/live")
+    assert r.status_code == 200
+    assert r.json()["status"] == "alive"
+
+
+def test_health_ready_checks_deps() -> None:
+    """readiness 探针：DB OK + Chroma OK + 磁盘 OK → 200（M6.0）。"""
+    r = client.get("/health/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ready"
+    assert body["db"] == "ok"
+    assert body["chroma"] == "ok"
+    assert body["disk"] == "ok"
+
+
 def test_metrics_endpoint_exposes_core_metrics() -> None:
     r = client.get("/metrics")
     assert r.status_code == 200

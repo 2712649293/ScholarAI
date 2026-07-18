@@ -930,23 +930,26 @@ docker compose down
 ```
 
 ### M6.4 云端部署文档
-**文件**：`deploy/README.md`
-- 三个选项详细步骤（每选项 ≤ 1 页）：
-  1. **AWS Fargate**：ECR 推镜像 + task definition + ALB + EFS
-  2. **GCP Cloud Run**：`gcloud run deploy` 一行命令
-  3. **阿里云 SAE / 腾讯云轻量**：国内最方便
-- 环境变量注入：用云厂商 Secret Manager / Parameter Store
+**状态**：⏸ **推迟到 v1.0 之前**（用户决定云平台后再写，避免空写三种）
+- v1.0 之前完成：Fargate / Cloud Run / 阿里云 SAE 三选一写详细，其他写骨架
+- 占位 `deploy/k8s/README.md`（已建）
+- 环境变量注入：云厂商 Secret Manager / Parameter Store
 - Chroma 持久化：云盘挂载，或用 Pinecone 替代
 - PDF 存储：S3/OSS，boto3/oss2 替换本地 `PaperStorage` 接口
 
-**不实现 K8s YAML**，但留 `deploy/k8s/` 目录 + README 占位。
+**不实现 K8s YAML**。
 
-✅ → **打 tag v0.1.0-m6 → 1.0.0-rc1**
+✅ → **打 tag v0.1.0-m6 → 1.0.0-rc1**（M6.4 推迟不影响 v0.1.0-m6 tag，v0.1.0 → 1.0.0 期间补）
 
 **M6 退出检查**：
-- [ ] `docker compose up` 一键起
-- [ ] 三种部署方式文档可读、可执行
-- [ ] README 有完整的本地启动 + 部署说明
+- [ ] `docker compose up` 一键起（需 docker 环境手动验证）
+- [x] 后端 Dockerfile 多阶段 + BGE 模型预下载
+- [x] 前端 Dockerfile + nginx.conf（SPA fallback + /api 反代 + SSE 透传）
+- [x] docker-compose.yml（单 worker 警告 + env 路径修正 + 健康检查）
+- [x] /health/live + /health/ready（§8.5 横切）
+- [x] Makefile docker 钩子（build/up/down/logs）
+- [x] README 两种启动方式（dev 源码 + docker）
+- [ ] M6.4 三种部署方式文档可读、可执行（推迟 v1.0 之前）
 
 ---
 

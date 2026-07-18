@@ -1,4 +1,4 @@
-.PHONY: init-env up-be up-fe test-be test-fe type-be install-be install-fe clean
+.PHONY: init-env up-be up-fe test-be test-fe type-be install-be install-fe clean docker-up docker-down docker-logs docker-build
 
 # 从 apikey.txt 生成 backend/.env（只读不写 apikey 内容到任何 git 跟踪文件）
 init-env:
@@ -35,5 +35,23 @@ test-fe:
 type-be:
 	cd backend && uv run mypy app
 
+# === Docker（M6.2 compose）===
+
+docker-build:
+	cd deploy && docker compose build
+
+docker-up:
+	cd deploy && docker compose up -d --build
+	@echo "✓ ScholarAI 启动中..."
+	@sleep 10
+	@echo "后端健康检查: $$(curl -s http://localhost:8000/health/live || echo FAIL)"
+	@echo "前端: http://localhost:5173"
+
+docker-down:
+	cd deploy && docker compose down
+
+docker-logs:
+	cd deploy && docker compose logs -f --tail=100
+
 clean:
-	rm -rf backend/.venv frontend/node_modules data/
+	rm -rf backend/.venv frontend/node_modules data/ deploy/data/

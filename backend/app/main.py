@@ -1,6 +1,7 @@
 """FastAPI 应用入口。"""
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -96,8 +97,59 @@ def prometheus_metrics() -> Response:
 
 @app.get("/health")
 def health() -> dict[str, str | bool]:
-    """存活探针：进程是否在跑。"""
+    """兼容旧路径（K8s/docker 通用健康检查）。"""
     return {"status": "alive", "version": __version__}
+
+
+@app.get("/health/live")
+def health_live() -> dict[str, str | bool]:
+    """livenessProbe：进程在 → alive。K8s 重启判定。"""
+    return {"status": "alive", "version": __version__}
+
+
+@app.get("/health/ready")
+def health_ready() -> Response:
+    """readinessProbe：DB + Chroma + 磁盘可写。任一不通 → 503，LB/k8s 摘流量。"""
+    checks: dict[str, str] = {}
+    ok = True
+    # DB
+    try:
+        from sqlalchemy import text
+        from app.db.session import engine
+
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        checks["db"] = f"fail: {e!s}"[:120]
+        ok = False
+    # Chroma
+    try:
+        from app.rag.vector_store import get_client
+
+        get_client().heartbeat() if hasattr(get_client(), "heartbeat") else None
+        checks["chroma"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        checks["chroma"] = f"fail: {e!s}"[:120]
+        ok = False
+    # 磁盘：尝试写临时文件
+    try:
+        from pathlib import Path
+        from app.config import settings
+
+        probe = Path(settings.upload_dir) / ".health_probe"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok")
+        probe.unlink()
+        checks["disk"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        checks["disk"] = f"fail: {e!s}"[:120]
+        ok = False
+    return Response(
+        status_code=200 if ok else 503,
+        content=json.dumps({"status": "ready" if ok else "unready", **checks}),
+        media_type="application/json",
+    )
 
 
 @app.get("/")

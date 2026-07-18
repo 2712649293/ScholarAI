@@ -1,0 +1,58 @@
+# ScholarAI 本地一键部署。
+#
+# 用法：
+#   make docker-up    # 启
+#   make docker-down  # 停
+#   make docker-logs  # 看日志
+#
+# ponytail: 关键设计
+# - 单 worker（嵌入式 Chroma 多进程写同一目录会冲突，扩到多 worker 见 §12.10）
+# - 不起独立 chroma 容器（嵌入式 PersistentClient 走 ./data/chroma/）
+# - ./data 挂到容器内，Chroma/PDF/reports/sessions SQLite 全部持久化
+
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: scholarai-backend:latest
+    container_name: scholarai-backend
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env      # ⚠️ 计划原写 ../.env，错误；实际 .env 在 backend/.env
+    environment:
+      # 容器内 Chroma 路径需指向挂载的 data/
+      - CHROMA_PERSIST_DIR=/app/data/chroma
+      - PAPER_STORAGE_DIR=/app/data/papers
+      - REPORTS_DIR=/app/data/reports
+      - UPLOAD_DIR=/app/data/uploads
+      - DATABASE_URL=sqlite:////app/data/scholarai.db
+    volumes:
+      - ../data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE=/api    # nginx 反代，不需要直接指后端
+    image: scholarai-frontend:latest
+    container_name: scholarai-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
