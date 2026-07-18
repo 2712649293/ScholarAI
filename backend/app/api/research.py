@@ -106,3 +106,5 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
         yield _sse("final", payload)
         # ponytail: 多发一个空 keep-alive 防 uvicorn/proxy 缓冲挂起
         yield ": done\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
