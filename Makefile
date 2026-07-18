@@ -1,4 +1,4 @@
-.PHONY: init-env up-be up-fe test-be test-fe install-be install-fe clean
+.PHONY: init-env up-be up-fe test-be test-fe type-be install-be install-fe clean
 
 # 从 apikey.txt 生成 backend/.env（只读不写 apikey 内容到任何 git 跟踪文件）
 init-env:
@@ -30,6 +30,10 @@ test-be:
 
 test-fe:
 	cd frontend && npm test
+
+# mypy 防 async def 漏 return → FastAPI 序列化为 null JSON（m5.5 教训）
+type-be:
+	cd backend && uv run mypy app
 
 clean:
 	rm -rf backend/.venv frontend/node_modules data/

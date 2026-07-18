@@ -28,6 +28,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "mypy>=2.3.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
@@ -38,3 +39,12 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: 真实外部调用（LLM/arxiv/网络），默认跳过；跑用 pytest -m integration",
 ]
+
+[tool.mypy]
+# 关键：检查 async def 返回注解（防 None 被 FastAPI 序列化为 null JSON）
+# ⚠️ 这个 flag 没了；用 disallow_incomplete_defs 替代——async def 没 return 会标 missing return statement
+disallow_incomplete_defs = true
+warn_return_any = true
+no_implicit_optional = true
+ignore_missing_imports = true
+files = ["app"]

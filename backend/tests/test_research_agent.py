@@ -138,6 +138,29 @@ def test_stream_generator_produces_all_expected_events() -> None:
         assert body["session_id"]
 
 
+# === 防 "返 None → null" 灾难 ===
+
+def test_stream_endpoint_actually_returns_streamingresponse() -> None:
+    """回归：start_research_stream 必须返 StreamingResponse，不是 None。
+
+    之前某次 Edit 误删了 return StreamingResponse(...) 行，函数隐式返 None，
+    FastAPI 把 None 序列化为 'null' JSON 返 200，浏览器拿到 null 卡住。
+    这个测试用直接 await + 类型断言把这条不变量锁死。
+    """
+    import asyncio as _asyncio
+    from fastapi.responses import StreamingResponse as _SR
+    from app.api import research as R
+    from app.schemas.research import ResearchRequest
+
+    p1, p2, p3, p4, p5 = _patches(_full_run_script())
+    with p1, p2, p3, p4, p5:
+        req = ResearchRequest(query="x", depth="quick", session_id=None)
+        resp = _asyncio.run(R.start_research_stream(req))
+        assert resp is not None, "endpoint 返 None → FastAPI 会序列化为 null JSON"
+        assert isinstance(resp, _SR), f"必须返 StreamingResponse，实际 {type(resp).__name__}"
+        assert resp.media_type == "text/event-stream"
+
+
 # === tool 前置校验（半约束的核心，直接调 tool，不过 model）===
 
 def test_tool_preconditions_block_out_of_order() -> None:
