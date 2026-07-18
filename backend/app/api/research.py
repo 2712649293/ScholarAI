@@ -97,14 +97,12 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
             return  # 硬错误：只报错，不再发 final（避免前端错误+空综述双显示）
 
         report, report_path = _finalize(session.id, ctx)
-        yield _sse(
-            "final",
-            {
-                "session_id": session.id,
-                "report_markdown": report,
-                "report_path": report_path,
-                "papers": ctx.papers,
-            },
-        )
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+        payload = {
+            "session_id": session.id,
+            "report_markdown": report,
+            "report_path": report_path,
+            "papers": ctx.papers,
+        }
+        yield _sse("final", payload)
+        # ponytail: 多发一个空 keep-alive 防 uvicorn/proxy 缓冲挂起
+        yield ": done\n\n"
