@@ -81,3 +81,25 @@ class Document(Base):
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     kb: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+
+
+class ResearchStateModel(Base):
+    """研究跨轮记忆（M4.6/§12.11）。每 session 一条，最后一次研究的状态。
+    用于聊天追问场景：user 在同一 session 发"再多找几篇"，agent 加载 papers/draft 续接。
+    """
+    __tablename__ = "research_states"
+
+    session_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    papers: Mapped[str] = mapped_column(Text, default="[]")  # JSON
+    analyses: Mapped[str] = mapped_column(Text, default="[]")  # JSON
+    draft: Mapped[str] = mapped_column(Text, default="")
+    feedback: Mapped[str] = mapped_column(Text, default="")
+    download_failures: Mapped[str] = mapped_column(Text, default="[]")  # JSON
+    search_queries: Mapped[str] = mapped_column(Text, default="[]")  # JSON
+    sub_questions: Mapped[str] = mapped_column(Text, default="[]")  # JSON
+    iteration: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )

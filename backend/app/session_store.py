@@ -5,11 +5,12 @@ ponytail: 不做内存缓存——本地 SQLite 够快；要缓存等切 Postgre
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from app.db.models import MessageModel, SessionModel
+from app.db.models import MessageModel, ResearchStateModel, SessionModel
 from app.db.session import SessionLocal
 
 
@@ -70,6 +71,50 @@ class DBSessionStore:
                 .all()
             )
             return [Message(role=r.role, content=r.content) for r in reversed(rows)]
+
+    # === 研究跨轮记忆（M4.6/§12.11）===
+
+    def load_research_state(self, session_id: str) -> dict | None:
+        """读 session 的研究状态。无返回 None。"""
+        with SessionLocal() as db:
+            rs = db.get(ResearchStateModel, session_id)
+            if rs is None:
+                return None
+            return {
+                "papers": json.loads(rs.papers or "[]"),
+                "analyses": json.loads(rs.analyses or "[]"),
+                "draft": rs.draft or "",
+                "feedback": rs.feedback or "",
+                "download_failures": json.loads(rs.download_failures or "[]"),
+                "search_queries": json.loads(rs.search_queries or "[]"),
+                "sub_questions": json.loads(rs.sub_questions or "[]"),
+                "iteration": rs.iteration or 0,
+            }
+
+    def save_research_state(self, session_id: str, state: dict) -> None:
+        """upsert 研究状态。重复 session_id 覆盖（最后一次研究胜出）。"""
+        with SessionLocal() as db:
+            rs = db.get(ResearchStateModel, session_id)
+            payload = {
+                "papers": json.dumps(state.get("papers", []), ensure_ascii=False),
+                "analyses": json.dumps(state.get("analyses", []), ensure_ascii=False),
+                "draft": state.get("draft", ""),
+                "feedback": state.get("feedback", ""),
+                "download_failures": json.dumps(
+                    state.get("download_failures", []), ensure_ascii=False
+                ),
+                "search_queries": json.dumps(
+                    state.get("search_queries", []), ensure_ascii=False
+                ),
+                "sub_questions": json.dumps(state.get("sub_questions", []), ensure_ascii=False),
+                "iteration": state.get("iteration", 0),
+            }
+            if rs is None:
+                db.add(ResearchStateModel(session_id=session_id, **payload))
+            else:
+                for k, v in payload.items():
+                    setattr(rs, k, v)
+            db.commit()
 
 
 # ponytail: 单例

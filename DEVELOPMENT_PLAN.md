@@ -1213,6 +1213,7 @@ class UploadConstraints:
 | 2026-07-16 | Reviewer 循环的 `iteration` 由 synthesizer 每次运行 +1 | 单一自增点，避免重复计数 |
 | 2026-07-17 | 研究综述 `.md` 文件名加唯一后缀 | 同一 session 多次研究不互相覆盖（M4.5 实测发现） |
 | 2026-07-17 | 研究模式跨轮记忆（聊天追问）列为 v0.2 首要 | M4.5 实测：追问因每请求新建 context 而失败；见 §12.11 |
+| 2026-07-19 | §12.11 实现：DB 表（research_states） + 同 session 自动续接 | 续接时注入 system note，论文累积去重，最后研究胜出 |
 | 2026-07-17 | 测试隔离：conftest 指向临时 SQLite + 临时数据目录 | 测试不再污染 dev 库/reports；越早做越省事 |
 
 ---
@@ -1421,6 +1422,16 @@ M1 起步时写的 `README.md` 应包含：
 **优先级**：**v0.2 第一件事**（比其他 v0.2 项都靠前）。牵扯 context 持久化 + 并发，值得单独设计，不塞进 v0.1。
 
 **v0.1 临时表现**：研究模式每次都是独立新研究；前端可加一句提示"研究模式暂不支持追问，每次为独立任务"。
+
+**v0.2 实现（2026-07-19 完成）**：
+- 选 DB 表（`research_states`，SQLite）持久化
+- `session_store.load_research_state / save_research_state`
+- api/research.py 注入 system note 让 agent 知道续接上下文
+- 同 session 自动续接，无需 UI 改动
+- 6 个测试覆盖：round1 落盘 / round2 续接 / 新 session 隔离 / 重启 / 无 state 兜底 / 注记内容
+- dev DB 需要 `alembic upgrade head` 才能用新表（否则 search chat_followup 端点会用旧数据）
+
+⚠️ **dev 部署需手动迁移**：在 backend/ 目录跑 `alembic upgrade head` 创建 `research_states` 表。
 
 ---
 
