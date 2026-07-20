@@ -116,6 +116,16 @@ class DBSessionStore:
                     setattr(rs, k, v)
             db.commit()
 
+    def delete_files(self, session_id: str) -> None:
+        """删 session 的 paper 目录（M2 per-session 路径）。DB 删除不在此。"""
+        import shutil
+        from app.config import settings
+        from pathlib import Path
+
+        papers_dir = Path(settings.paper_storage_dir) / session_id
+        if papers_dir.exists() and papers_dir.is_dir():
+            shutil.rmtree(papers_dir, ignore_errors=True)
+
 
 # ponytail: 单例
 store = DBSessionStore()

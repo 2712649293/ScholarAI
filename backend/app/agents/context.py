@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ResearchContext:
     query: str
+    session_id: str  # M2: 每 session 独立 PDF 文件夹
     depth: str = "normal"
     max_papers: int = 20
     sub_questions: list[str] = field(default_factory=list)

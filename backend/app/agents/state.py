@@ -19,3 +19,5 @@ class ResearchState(TypedDict, total=False):
     feedback: str  # Reviewer 反馈（M4.3）
     passed: bool  # Reviewer 是否通过（M4.3）
     iteration: int
+    session_id: str  # M2: per-session paper 目录
+    draft: str  # M2.6/§12.11: refine 模式用（原综述）

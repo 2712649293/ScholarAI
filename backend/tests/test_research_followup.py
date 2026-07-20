@@ -137,6 +137,7 @@ def test_synthesizer_sees_continuation_note() -> None:
     # 前态：已有论文+综述
     prior_ctx = ResearchContext(
         query="方向A",
+        session_id="sid",
         papers=[{"arxiv_id": "2401.00001", "title": "T1"}],
         draft="前综述",
         sub_questions=["子1"],
@@ -149,6 +150,6 @@ def test_synthesizer_sees_continuation_note() -> None:
     assert msgs[-1] == ("user", "方向A")
 
     # 无前态：直接 user query
-    fresh_ctx = ResearchContext(query="新方向")
+    fresh_ctx = ResearchContext(query="新方向", session_id="sid")
     msgs = _build_initial_messages(fresh_ctx)
     assert msgs == [("user", "新方向")]

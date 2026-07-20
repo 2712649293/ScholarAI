@@ -30,10 +30,10 @@ def make_tools(ctx: ResearchContext) -> list[BaseTool]:
 
     @tool
     async def download_papers() -> str:
-        """下载已检索到的论文 PDF。需先 search_arxiv。"""
+        """下载已检索到的论文 PDF 到本 session 专属目录。需先 search_arxiv。"""
         if not ctx.papers:
             return "错误：还没检索到论文，请先调用 search_arxiv"
-        out = await downloader.run({"papers": ctx.papers})
+        out = await downloader.run({"papers": ctx.papers, "session_id": ctx.session_id})
         ctx.papers = out["papers"]
         ctx.download_failures = out["download_failures"]
         ok = sum(1 for p in ctx.papers if p.get("local_path"))
@@ -55,8 +55,13 @@ def make_tools(ctx: ResearchContext) -> list[BaseTool]:
         return f"分析完成：{len(ctx.analyses)} 篇提取了结构化信息"
 
     @tool
-    async def write_review() -> str:
-        """基于已有论文/分析生成综述草稿。需先 search_arxiv。审校不通过后可再次调用改写。"""
+    async def write_review(instructions: str = "") -> str:
+        """基于论文/分析生成或改写综述草稿。
+
+        Args:
+            instructions: 修改指南（如"简化引言"/"扩写结论"/"翻译成英文"）。
+                留空则按已有 ctx 生成初版；非空则在已有 draft 基础上改写（refine 模式）。
+        """
         if not ctx.papers:
             return "错误：没有论文，请先调用 search_arxiv"
         out = await synthesizer.run(
@@ -66,13 +71,16 @@ def make_tools(ctx: ResearchContext) -> list[BaseTool]:
                 "analyses": ctx.analyses,
                 "download_failures": ctx.download_failures,
                 "sub_questions": ctx.sub_questions,
-                "feedback": ctx.feedback,
+                # 用 instructions 作为本次 feedback；不修改 ctx.feedback（避免污染 review_report 路径）
+                "feedback": instructions,
                 "iteration": ctx.iteration,
+                "draft": ctx.draft,  # 让 synthesizer 看到原 draft 以触发 refine 模式
             }
         )
         ctx.draft = out["report_draft"]
         ctx.iteration = out["iteration"]
-        return f"综述已生成（{len(ctx.draft)} 字，第 {ctx.iteration} 版）"
+        action = "改写" if instructions else "生成"
+        return f"综述已{action}（{len(ctx.draft)} 字，第 {ctx.iteration} 版）"
 
     @tool
     async def review_report() -> str:

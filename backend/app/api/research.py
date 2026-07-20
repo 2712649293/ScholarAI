@@ -28,18 +28,24 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _new_context(req: ResearchRequest) -> ResearchContext:
+def _new_context(req: ResearchRequest, session_id: str) -> ResearchContext:
     cap = DEPTH_CAP.get(req.depth, 20)
-    return ResearchContext(query=req.query, depth=req.depth, max_papers=min(req.max_papers, cap))
+    return ResearchContext(
+        query=req.query,
+        session_id=session_id,
+        depth=req.depth,
+        max_papers=min(req.max_papers, cap),
+    )
 
 
 def _load_prior_state(session_id: str, fallback_query: str, fallback_depth: str) -> ResearchContext:
     """读上次研究状态；无则新建。session 不存在或 mode 不匹配照样新建（兜底）。"""
     prior = store.load_research_state(session_id)
     if prior is None:
-        return ResearchContext(query=fallback_query, depth=fallback_depth)
+        return ResearchContext(query=fallback_query, session_id=session_id, depth=fallback_depth)
     return ResearchContext(
         query=fallback_query,
+        session_id=session_id,
         depth=fallback_depth,
         sub_questions=prior.get("sub_questions", []),
         search_queries=prior.get("search_queries", []),
@@ -110,7 +116,7 @@ async def start_research(req: ResearchRequest) -> ResearchResponse:
     ctx = (
         _load_prior_state(session.id, req.query, req.depth)
         if req.session_id
-        else _new_context(req)
+        else _new_context(req, session.id)
     )
     agent = build_agent(ctx)
     try:
@@ -136,7 +142,7 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
     ctx = (
         _load_prior_state(session.id, req.query, req.depth)
         if req.session_id
-        else _new_context(req)
+        else _new_context(req, session.id)
     )
     agent = build_agent(ctx)
 

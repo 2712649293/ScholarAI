@@ -46,8 +46,16 @@ async def run(state: ResearchState) -> ResearchState:
     if failures:
         user += f"\n\n注意：有 {len(failures)} 篇论文下载失败，请在综述末尾注明。"
     feedback = state.get("feedback", "")
-    if feedback:  # M4.3 重写：带上审校意见
-        user += f"\n\n上一版综述的审校意见（请针对性改进）：\n{feedback}"
+    existing_draft = (state.get("draft") or "").strip()
+    if feedback and existing_draft:
+        # Refine 模式：用户传 instructions 改写已有 draft
+        user += (
+            f"\n\n【上一版综述（需改写）】\n{existing_draft}\n\n"
+            f"【修改要求】\n{feedback}\n\n"
+            "请只按修改要求改写，其他部分尽量保持原文。返回完整新版本。"
+        )
+    elif feedback:  # 兜底：有 feedback 无 draft（理论上不该发生）
+        user += f"\n\n请基于以下要求生成综述：\n{feedback}"
 
     messages = [SystemMessage(content=SYSTEM), HumanMessage(content=user)]
     draft = await call_llm(messages, timeout=180)

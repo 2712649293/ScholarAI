@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.models import SessionModel
 from app.db.session import get_db
 from app.errors import SessionNotFound
+from app.session_store import store
 from app.schemas.session import (
     MessageOut,
     SessionDetail,
@@ -55,6 +56,8 @@ def delete_session(session_id: str, db: Session = Depends(get_db)) -> None:
         raise _not_found()
     db.delete(s)  # cascade 删 messages
     db.commit()
+    # M2: 删 session 的 paper 文件夹（避免 orphan PDF 堆在 data/papers/）
+    store.delete_files(session_id)
 
 
 @router.patch("/{session_id}", response_model=SessionSummary)

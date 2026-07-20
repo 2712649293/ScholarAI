@@ -164,7 +164,7 @@ def test_stream_endpoint_actually_returns_streamingresponse() -> None:
 # === tool 前置校验（半约束的核心，直接调 tool，不过 model）===
 
 def test_tool_preconditions_block_out_of_order() -> None:
-    ctx = ResearchContext(query="x")
+    ctx = ResearchContext(query="x", session_id="sid")
     tools = {t.name: t for t in make_tools(ctx)}
     # 还没检索就下载 / 分析 / 综述 / 审校 → 各自报错提示
     assert "错误" in asyncio.run(tools["download_papers"].ainvoke({}))
@@ -174,7 +174,7 @@ def test_tool_preconditions_block_out_of_order() -> None:
 
 
 def test_search_tool_accumulates_and_dedupes() -> None:
-    ctx = ResearchContext(query="x", depth="normal", max_papers=20)
+    ctx = ResearchContext(query="x", session_id="sid", depth="normal", max_papers=20)
     tools = {t.name: t for t in make_tools(ctx)}
     with patch("app.agents.nodes.searcher._search_one", return_value=FAKE_PAPERS + [FAKE_PAPERS[0]]):
         asyncio.run(tools["search_arxiv"].ainvoke({"queries": ["q1"]}))

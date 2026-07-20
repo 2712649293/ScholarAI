@@ -57,7 +57,10 @@ async def run(state: ResearchState) -> ResearchState:
     if not papers:
         return {"papers": [], "download_failures": []}
 
-    dest_dir = Path(settings.paper_storage_dir)
+    # M2: 每 session 独立 PDF 目录（删 session 时一起删）
+    session_id = state.get("session_id")
+    base_dir = Path(settings.paper_storage_dir)
+    dest_dir = base_dir / session_id if session_id else base_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     async with httpx.AsyncClient() as client:
@@ -72,7 +75,7 @@ async def run(state: ResearchState) -> ResearchState:
             )
         except asyncio.TimeoutError:
             # 全部标记失败（gather 在超时后行为不可靠；保守起见用 None，后续判定失败）
-            results = [None] * len(papers)
+            results = [None] * len(papers)  # type: ignore[list-item]
 
     updated: list[dict] = []
     failures: list[str] = []
