@@ -942,7 +942,7 @@ docker compose down
 ✅ → **打 tag v0.1.0-m6 → 1.0.0-rc1**（M6.4 推迟不影响 v0.1.0-m6 tag，v0.1.0 → 1.0.0 期间补）
 
 **M6 退出检查**：
-- [ ] `docker compose up` 一键起（需 docker 环境手动验证）
+- [ ] ⏸ **`docker compose up` 验证** —— docker 安装/验证推迟，文件已就位（见 §12.12）
 - [x] 后端 Dockerfile 多阶段 + BGE 模型预下载
 - [x] 前端 Dockerfile + nginx.conf（SPA fallback + /api 反代 + SSE 透传）
 - [x] docker-compose.yml（单 worker 警告 + env 路径修正 + 健康检查）
@@ -950,6 +950,21 @@ docker compose down
 - [x] Makefile docker 钩子（build/up/down/logs）
 - [x] README 两种启动方式（dev 源码 + docker）
 - [ ] M6.4 三种部署方式文档可读、可执行（推迟 v1.0 之前）
+
+### 12.12 ⏸ M6 docker 部署验证推迟
+
+> **来源**：用户本地未装 docker，docker 验证推迟。所有 docker 配置文件已就位（`backend/Dockerfile`、`frontend/Dockerfile`、`frontend/nginx.conf`、`deploy/docker-compose.yml`、`deploy/k8s/README.md`、`make docker-*`），**有 docker 环境时**：
+>
+> ```bash
+> cd /home/gh/ScholarAI
+> make docker-build    # 首次 3-10 分钟（BGE 模型下载 + wheels）
+> make docker-up       # 起
+> curl http://localhost:8000/health/ready
+> # 浏览器开 http://localhost:5173 跑研究
+> make docker-down
+> ```
+>
+> **优先级**：v0.2 第一件事（比其他 v0.2 项都靠前）。docker 真验证暴露的问题（构建慢、镜像大小、HF 下载、卷挂载）必须在 v1.0 之前解决。
 
 ---
 

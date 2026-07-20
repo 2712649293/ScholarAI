@@ -22,15 +22,15 @@ make up-be           # 后端 → http://localhost:8000
 make up-fe           # 前端 → http://localhost:5173
 ```
 
-### 方式二：Docker（生产形态 / 5 分钟拉起）
+### 方式二：Docker（可选，⏸ 验证推迟）
+Dockerfile / docker-compose.yml 已就位（`backend/Dockerfile`、`frontend/Dockerfile`、`deploy/docker-compose.yml`、`make docker-build/up/down/logs`）。
+**当前未做端到端 docker 验证**（本地无 docker 环境），见 [DEVELOPMENT_PLAN.md §12.12](./DEVELOPMENT_PLAN.md)。有 docker 环境时：
 ```bash
-make init-env        # 先准备 .env（docker 镜像读这个）
-make docker-build    # build 镜像（首次会拉基础镜像 + 下载 BGE 模型）
+make docker-build    # 首次 3-10 分钟（BGE 模型下载 + wheels）
 make docker-up       # 启 → http://localhost:5173
-make docker-logs     # 看日志
-make docker-down     # 停
+make docker-logs
+make docker-down
 ```
-
 > Docker 镜像**自包含 BGE embedding 模型**（build 阶段预下载），无需运行时联网。
 > 单 worker 部署（嵌入式 Chroma 限制）；多 worker 扩展见 [DEVELOPMENT_PLAN.md §12.10](./DEVELOPMENT_PLAN.md)。
 
@@ -61,11 +61,11 @@ make docker-down     # 停
 - [x] M4 研究模式 v2（论文级综述）
 - [x] M4.5 ReAct 主 agent 重构
 - [x] M5 可观测性
-- [x] M6 部署（本地 Docker 完整；云端文档 v1.0 之前）
+- [x] M6 部署（配置文件完整；docker 验证 ⏸ 推迟；云端文档 v1.0 之前）
 
 ## 下一阶段
 - v0.2 优先：研究模式**聊天追问（跨轮记忆）**——见 DEVELOPMENT_PLAN §12.11
-- v1.0 之前：云端三选一部署文档（Fargate / Cloud Run / 阿里云 SAE）
+- v1.0 之前：docker 端到端冒烟验证（§12.12）+ 云端三选一部署文档（Fargate / Cloud Run / 阿里云 SAE）
 
 ## License
 TBD
