@@ -127,6 +127,8 @@ test-fe:
 | **M3** | 研究模式 v1：3 节点（abstract 综述） | 4 | 给方向 → 拿到 abstract 级综述 |
 | **M4** | 研究模式 v2：下载 + PDF 解析 | 4 | 给方向 → 拿到论文级综述 |
 | **M4.5** | 研究重构：ReAct 主 agent 调度子 agent | 5 | 主 agent 动态派发，非固定流水线 |
+| **M4.5.1** | checkpointer 完整迁移（langgraph 标准） | 5 | thread_id 物理隔离 + 跨轮 state 恢复 |
+| **M5.5** | Plan 模块：用户可审可改的研究计划 | 5 | 给方向 → 审 plan → 批准 → 拿到综述 |
 | **M5** | 可观测性 | 4 | LangSmith 看得到 trace，`/metrics` 暴露 |
 | **M6** | 部署 | 4 | `docker compose up` 拉起完整栈 |
 
@@ -854,6 +856,191 @@ curl http://localhost:8000/metrics
 
 ---
 
+## 6.5 M5.5 · Plan 模块（用户可审可改的研究计划）
+
+> **动机**：当前研究模式是 agent 自主跑 search→download→analyze→write_review，**用户对方向没控制**：
+> - agent 跳步（实测：跳过 search 直接调 analyze）
+> - agent 选错关键词 → 综述偏题
+> - 用户想问"你打算怎么研究？"——只能干等结果
+>
+> Plan 模块解决：每个研究先生成计划（子问题 + 检索词 + 章节大纲），**用户审阅/编辑/拒绝**后才执行。
+> 对齐 OpenAI Deep Research 的 UX。
+
+### 关键设计（已定）
+- **plan 必走**：每个新研究都先生成 plan 等用户审（不 opt-in）
+- **interrupt 机制**：用 langgraph 标准的 `interrupt()` 暂停等用户审
+- **plan 内容**：sub_questions + search_queries + **outline**（综述章节结构）
+- **跨轮追问**：plan 锁住，可选"修改 plan"按钮（默认不重生成）
+
+### 架构
+
+```
+                ┌──────────────────────────────────────┐
+                │  create_agent(state_schema=State)    │  plan/plan_status 入 state
+                └──────────────────────────────────────┘
+                                  ↓
+   POST /api/research/plan
+     → planner_node（LLM 生成 plan）
+     → state.plan = {...}, state.plan_status = "pending"
+     → interrupt({"plan": ..., "session_id": ...})  ← 暂停等审
+     → 返 202 + plan 给前端
+                                  ↓
+   [用户审]
+     ↙        ↓        ↘
+   approve   edit      reject
+     ↓        ↓         ↓
+   POST     PATCH     POST
+   /approve  /plan     /reject
+     ↓        ↓         ↓
+   Command(resume=...)   改 state.plan    Command(resume=...)
+   → 续跑 search      plan_status      → END
+     ↓        ↓
+   search  →  (回 plan
+   download   "pending")
+   analyze    ↓
+   write     (再审)
+   review
+     ↓
+   final
+```
+
+### 数据模型
+
+```python
+# backend/app/agents/state.py (扩展)
+class ResearchState(TypedDict, total=False):
+    # ... 已有字段 ...
+    
+    # === Plan 模块 ===
+    plan: dict | None              # {"sub_questions": [...], "search_queries": [...], "outline": [...]}
+    plan_status: str               # "pending" | "approved" | "rejected"
+    plan_generated_at: str | None  # ISO timestamp
+
+# backend/app/agents/plan.py (新)
+class ResearchPlan(TypedDict, total=False):
+    """plan 字段的 schema（也作为 planner LLM 输出约束）。"""
+    sub_questions: list[str]    # 3-5 个
+    search_queries: list[str]   # 3-5 个英文 arxiv 检索词
+    outline: list[str]          # 5-7 个章节标题
+    estimated_papers: int       # 10-30
+    reasoning: str              # 简短说明（<100 字）
+```
+
+### LangGraph 集成
+
+```python
+# backend/app/agents/research_agent.py
+g = StateGraph(ResearchState)
+g.add_node("planner", planner.run)
+g.add_node("searcher", searcher.run)
+# ... 其他节点 ...
+
+# planner 之后：interrupt 等审
+g.add_edge(START, "planner")
+g.add_conditional_edges("planner", _route_after_plan, {
+    "approved": "searcher",
+    "rejected": END,
+})
+# 审阅后通过 Command(resume=...) 续接 → searcher
+
+# backend/app/agents/nodes/planner.py
+async def run(state: ResearchState) -> dict:
+    plan = await generate_plan(state)  # LLM 输出结构化
+    # 抛 interrupt 暂停，把 plan 给用户
+    approval = interrupt({"plan": plan, "session_id": state["session_id"]})
+    if approval["action"] == "approve":
+        return {
+            "plan": approval.get("edited_plan", plan),  # 优先用户编辑过的
+            "plan_status": "approved",
+            "sub_questions": plan["sub_questions"],
+            "search_queries": plan["search_queries"],
+        }
+    return {"plan_status": "rejected"}
+```
+
+### API 端点
+
+```
+POST   /api/research/plan                        # 开始研究 + 生成 plan（跑到 interrupt）
+       body: {query, depth, max_papers}
+       resp: 202 {session_id, plan, plan_status: "pending"}
+
+GET    /api/research/{sid}/plan                  # 读当前 plan
+       resp: {plan, plan_status, plan_generated_at}
+
+PATCH  /api/research/{sid}/plan                  # 用户编辑 plan（不触发执行）
+       body: {plan: {sub_queries?, search_queries?, outline?}}
+       resp: {plan, plan_status: "pending"}      # 编辑后仍 pending
+
+POST   /api/research/{sid}/plan/approve         # 批准 + 续接执行
+       body: {edited_plan?: {...}}               # 可选：批准时传最终 plan
+       resp: {report, papers, ...}                # 完整 ResearchResponse
+
+POST   /api/research/{sid}/plan/reject           # 拒绝
+       body: {reason?: str}
+       resp: 204
+
+GET    /api/research/{sid}/plan/history          # （v0.3+）plan 修改历史
+```
+
+### 前端改动
+
+**Plan 卡片**（在 chat message 列表里）：
+- 标题：📋 研究计划
+- 内容：sub_questions（编号）、search_queries（代码块）、outline（标题列表）、reasoning（灰色小字）
+- 底部按钮：
+  - **✅ 批准**（主按钮，蓝色）
+  - **✏️ 编辑**（次按钮，弹出 inline editor：textarea 改 sub_questions/search_queries/outline）
+  - **❌ 拒绝**（次按钮，弹出"确认拒绝"对话框）
+- 状态：批准后卡片变灰"✓ 已批准，开始执行..."，tool timeline 接着走
+
+**新"修改计划"按钮**（跨轮追问时）：
+- 在 chat 顶部（如有已批准的 plan）："📋 当前计划：xxx [修改]"
+- 点击：重开 plan 卡片让用户改
+
+### 状态机
+
+```
+        ┌───── pending
+        ↓
+   无 plan ─→ 生成  ←─── 新查询
+        ↓
+     3 选 1
+   ↙   ↓    ↘
+approved edit rejected
+   ↓   ↓      ↓
+ 执行 回到   END（不执行）
+   ↓  pending
+```
+
+### 子阶段
+
+- **M5.5.0**：写计划（**当前**）✅
+- **M5.5.1**：ResearchPlan schema + planner node + state 字段 + interrupt 接入
+- **M5.5.2**：API 端点（generate/get/update/approve/reject）
+- **M5.5.3**：前端 Plan 卡片 + 编辑器 + 按钮
+- **M5.5.4**：测试（plan 生成、approve/reject 流程、编辑、跨轮 plan 复用、interrupt 边界）
+- **M5.5.5**：回写计划文档 + 决策日志 + 录 demo
+
+### 风险
+
+1. **interrupt 实现细节**：langgraph 1.x 的 `interrupt()` + `Command(resume=...)` API 可能与现有 aget_state 行为冲突，需要 probe
+2. **planner 调用的 LLM**：与 agent 同一个 LLM 的话，token 成本 +1（plan + 综述）；要不要单独用便宜模型（Haiku）？**待定**
+3. **plan 锁住 vs 追问**：用户改方向时需要重新生成 plan，UX 路径要清晰
+4. **interrupt 跨进程**：interrupt 状态存在 checkpointer 里，进程重启后能否 resume？**需要验证**
+
+### 与现有功能的关系
+
+| 现有 | plan 模块影响 |
+|------|---------------|
+| §12.11 跨轮追问 | 续接时**plan 锁住**（不重生成）；用户可手动"修改 plan"按钮 |
+| 自主 agent (M4.5.1) | 仍可独立调工具（write_review 时用 plan.outline 作章节参考） |
+| 续接提示 system note (M4.5) | 删掉，agent 直接读 state.plan |
+| 下载超时/deadline (M3.6) | 不变 |
+| 多 session 隔离 (M4.5) | plan 也在 checkpointer 里，thread_id 隔离自动 work |
+
+---
+
 ## 7. M6 · 部署
 
 ### M6.1 Dockerfile（后端）
@@ -1215,6 +1402,7 @@ class UploadConstraints:
 | 2026-07-17 | 研究模式跨轮记忆（聊天追问）列为 v0.2 首要 | M4.5 实测：追问因每请求新建 context 而失败；见 §12.11 |
 | 2026-07-19 | §12.11 实现：DB 表（research_states） + 同 session 自动续接 | 续接时注入 system note，论文累积去重，最后研究胜出 |
 | 2026-07-20 | §12.11 重构：**完全采用 langgraph 标准** — checkpointer 替代 DB 表 | AsyncSqliteSaver + thread_id=session_id，state_schema + ToolRuntime + Command；多 session 物理隔离；research_states 表删除 |
+| 2026-07-21 | M5.5 Plan 模块设计：用户可审可改的预执行计划 | 必走 + langgraph interrupt() + 含 outline + 跨轮 plan 锁住 |
 | 2026-07-17 | 测试隔离：conftest 指向临时 SQLite + 临时数据目录 | 测试不再污染 dev 库/reports；越早做越省事 |
 
 ---
