@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -47,15 +47,38 @@ export function ChatPanel() {
   const [kbs, setKBs] = useState<KB[]>([])
   const [selectedKBs, setSelectedKBs] = useState<Set<string>>(new Set())
 
+  // M_bug_sse_isolation: 跨 session 隔离 research SSE。
+  // runId = 当前 in-flight 流的标识（与启动时的 sessionId 绑定），切换 session 时
+  // 旧流的回调里 runId 已不匹配 → 丢弃事件 + abort fetch。两条防线：
+  // 1) abortRef() 取消已发出请求（防后端继续推 SSE chunk）
+  // 2) runId 闭包校验（防 abort 已发出但客户端解析层还有残留 event 进来）
+  const researchAbortRef = useRef<(() => void) | null>(null)
+  const researchRunIdRef = useRef<number>(0)
+
   useEffect(() => {
     listKBs().then(setKBs).catch(() => setKBs([]))
   }, [])
+
+  // M_bug_sse_isolation: 路由切到新 session 前，强制 abort 旧 in-flight SSE。
+  // 不 abort 的话：B 的研究流推 step/final 事件 → 旧闭包里的 setResearchSteps/setMessages/
+  // setLoading 把 A 的 state 搅乱 + navigate 把 URL 抢回 B。
+  useEffect(() => {
+    return () => {
+      researchAbortRef.current?.()
+      researchAbortRef.current = null
+      // 让任何尚在 in-flight 的回调都被 token 校验拦下
+      researchRunIdRef.current++
+    }
+  }, [routeSessionId])
 
   // M2.6.6: 路由 session 变化时加载历史（点侧边栏 / 直接开 URL / 新对话）
   useEffect(() => {
     if (!routeSessionId) {
       setSessionId(undefined)
       setMessages([])
+      setResearchSteps([])
+      setError(null)
+      setLoading(false)
       return
     }
     if (routeSessionId === sessionId) return // 自己刚创建的，别重复拉
@@ -76,6 +99,11 @@ export function ChatPanel() {
               markdown: s.mode === 'research' && m.role === 'assistant',
             })),
         )
+        // 切 session 时清掉上一个 session 的 loading/researchSteps/error，
+        // 否则用户从在跑的 B 切回 A 会看到 B 的「研究步骤」+ 「加载中」。
+        setResearchSteps([])
+        setError(null)
+        setLoading(false)
       })
       .catch(() => setMessages([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,21 +122,29 @@ export function ChatPanel() {
 
   function runResearch(query: string) {
     setResearchSteps([])
-    researchStream({ query, session_id: sessionId, depth: 'normal' }, (event, data) => {
-      if (event === 'step') {
-        const { node } = data as { node: string }
-        setResearchSteps((prev) => [...prev, labelForTool(node)])
-      } else if (event === 'final') {
-        const f = data as ResearchFinal
-        setSessionId(f.session_id)
-        setMessages((m) => [...m, { role: 'assistant', content: f.report_markdown, markdown: true }])
-        setLoading(false)
-        if (!routeSessionId) navigate(`/chat/${f.session_id}`)
-      } else if (event === 'error') {
-        setError((data as { message?: string; code?: string }).message ?? '研究失败')
-        setLoading(false)
-      }
-    })
+    // 起一个新 runId；任何旧回调里 runId 不匹配都直接丢弃（防止 abort 已发但
+    // 客户端 reader 还在解析残留 chunk 时把旧 event 写进新 session 的 state）。
+    const runId = ++researchRunIdRef.current
+    researchAbortRef.current?.() // 先取消上一次的 in-flight（如果有）
+    researchAbortRef.current = researchStream(
+      { query, session_id: sessionId, depth: 'normal' },
+      (event, data) => {
+        if (runId !== researchRunIdRef.current) return // stale callback，跳过
+        if (event === 'step') {
+          const { node } = data as { node: string }
+          setResearchSteps((prev) => [...prev, labelForTool(node)])
+        } else if (event === 'final') {
+          const f = data as ResearchFinal
+          setSessionId(f.session_id)
+          setMessages((m) => [...m, { role: 'assistant', content: f.report_markdown, markdown: true }])
+          setLoading(false)
+          if (!routeSessionId) navigate(`/chat/${f.session_id}`)
+        } else if (event === 'error') {
+          setError((data as { message?: string; code?: string }).message ?? '研究失败')
+          setLoading(false)
+        }
+      },
+    )
   }
 
   async function handleSubmit(e: FormEvent) {
