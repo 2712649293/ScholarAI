@@ -62,7 +62,11 @@ export function ChatPanel() {
     setSessionId(routeSessionId)
     getSession(routeSessionId)
       .then((s) => {
-        if (s.mode === 'research') setMode('research')
+        // M_bug_fix: 无条件按 session.mode 设 mode（之前只 setMode('research') 导致
+        // 切到 qa session 时 local mode 仍残留 research）。
+        // 后端 get_or_create 在 session 创建时锁定 mode，已存在 session 不会更新——
+        // 所以 s.mode 就是该 session 的"出身模式"，按它设 local state 即可。
+        setMode(s.mode as Mode)
         setMessages(
           s.messages
             .filter((m) => m.role === 'user' || m.role === 'assistant')

@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { ChatPanel } from './ChatPanel'
-import { chatQA, researchStream } from '@/lib/api'
+import { chatQA, getSession, researchStream } from '@/lib/api'
 
 vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
@@ -94,5 +94,16 @@ describe('ChatPanel', () => {
     })
     expect(screen.getByRole('button', { name: '下载 .md' })).toBeInTheDocument()
     expect(vi.mocked(researchStream)).toHaveBeenCalled()
+  })
+
+  it('mode follows session.mode on load (qa case — regression for mode-residue bug)', async () => {
+    // 回归：之前 setMode 只在 s.mode === 'research' 时调用，
+    // 切到 qa session 后 local mode 仍残留 research。修后无条件按 s.mode 设。
+    vi.mocked(getSession).mockResolvedValue({ mode: 'qa', messages: [] } as never)
+    renderPanel()
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '问答模式' })).toHaveClass('bg-blue-500')
+      expect(screen.getByRole('button', { name: '研究模式' })).not.toHaveClass('bg-blue-500')
+    })
   })
 })
