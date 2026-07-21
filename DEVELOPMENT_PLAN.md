@@ -1214,6 +1214,7 @@ class UploadConstraints:
 | 2026-07-17 | 研究综述 `.md` 文件名加唯一后缀 | 同一 session 多次研究不互相覆盖（M4.5 实测发现） |
 | 2026-07-17 | 研究模式跨轮记忆（聊天追问）列为 v0.2 首要 | M4.5 实测：追问因每请求新建 context 而失败；见 §12.11 |
 | 2026-07-19 | §12.11 实现：DB 表（research_states） + 同 session 自动续接 | 续接时注入 system note，论文累积去重，最后研究胜出 |
+| 2026-07-20 | §12.11 重构：**完全采用 langgraph 标准** — checkpointer 替代 DB 表 | AsyncSqliteSaver + thread_id=session_id，state_schema + ToolRuntime + Command；多 session 物理隔离；research_states 表删除 |
 | 2026-07-17 | 测试隔离：conftest 指向临时 SQLite + 临时数据目录 | 测试不再污染 dev 库/reports；越早做越省事 |
 
 ---
