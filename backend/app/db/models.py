@@ -83,23 +83,5 @@ class Document(Base):
     kb: Mapped[KnowledgeBase] = relationship(back_populates="documents")
 
 
-class ResearchStateModel(Base):
-    """研究跨轮记忆（M4.6/§12.11）。每 session 一条，最后一次研究的状态。
-    用于聊天追问场景：user 在同一 session 发"再多找几篇"，agent 加载 papers/draft 续接。
-    """
-    __tablename__ = "research_states"
-
-    session_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
-    )
-    papers: Mapped[str] = mapped_column(Text, default="[]")  # JSON
-    analyses: Mapped[str] = mapped_column(Text, default="[]")  # JSON
-    draft: Mapped[str] = mapped_column(Text, default="")
-    feedback: Mapped[str] = mapped_column(Text, default="")
-    download_failures: Mapped[str] = mapped_column(Text, default="[]")  # JSON
-    search_queries: Mapped[str] = mapped_column(Text, default="[]")  # JSON
-    sub_questions: Mapped[str] = mapped_column(Text, default="[]")  # JSON
-    iteration: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, onupdate=_now
-    )
+# M4.5.1: research_states 表已删——workflow 状态由 langgraph checkpointer 持久化（thread_id=session_id）。
+# 旧 §12.11 的 ResearchStateModel 不再需要，alembic 迁移见 a3f5d8e2b1c4_drop_research_states.py

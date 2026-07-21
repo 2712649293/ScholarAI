@@ -5,6 +5,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 # ponytail: 进程一启动就强制 HF 离线，避免 BGE 模型加载时联网拉 adapter_config.json
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -16,12 +17,23 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse, Response  # noqa: E402
 
 from app import __version__  # noqa: E402
+from app.agents import research_agent  # noqa: E402
 from app.api import chat, knowledge, research, sessions  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.errors import ScholarAIError  # noqa: E402
 from app.observability import metrics  # noqa: E402
 from app.observability.logging import configure_logging, logger  # noqa: E402
 from app.observability.tracing import setup_tracing  # noqa: E402
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """M4.5.1: 启动时初始化 langgraph checkpointer（async），退出时关闭。"""
+    await research_agent.init_saver()
+    try:
+        yield
+    finally:
+        await research_agent.close_saver()
 
 configure_logging()
 setup_tracing()
@@ -30,6 +42,7 @@ app = FastAPI(
     title="ScholarAI",
     version=__version__,
     description="一站式论文调研 Agent",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

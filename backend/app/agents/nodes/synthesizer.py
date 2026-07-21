@@ -1,4 +1,4 @@
-"""Synthesizer 节点：基于结构化分析（有则）或 abstract 写综述（M3.2 / M4.3 升级）。"""
+"""Synthesizer：纯函数，读 state dict 返回更新 dict（不关心 langgraph，工具包 Command）。"""
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -18,22 +18,23 @@ def _format_papers(papers: list[dict], analyses: list[dict]) -> str:
     blocks: list[str] = []
     for p in papers:
         a = by_id.get(p["arxiv_id"])
-        if a:  # M4：有结构化分析，优先用
+        if a:  # 有结构化分析，优先用
             blocks.append(
                 f"[{p['arxiv_id']}] {p['title']}\n"
                 f"问题：{a['problem']}\n方法：{a['method']}\n结果：{a['results']}\n"
                 f"局限：{a['limitations']}\n新意：{a['novelty']}"
             )
-        else:  # 退回 abstract（下载/解析失败，或 M3 无分析）
+        else:  # 退回 abstract
             blocks.append(f"[{p['arxiv_id']}] ({p['year']}) {p['title']}\n摘要：{p['abstract']}")
     return "\n\n".join(blocks)
 
 
-async def run(state: ResearchState) -> ResearchState:
-    iteration = state.get("iteration", 0) + 1  # 单一自增点（供 Reviewer 循环判上限）
+async def run(state: ResearchState) -> dict:
+    """返回 state 更新 dict（不含 messages，由工具加 ToolMessage）。"""
+    iteration = state.get("iteration", 0) + 1
     papers = state.get("papers", [])
     if not papers:
-        return {"report_draft": "未检索到相关论文，无法生成综述。", "iteration": iteration}
+        return {"draft": "未检索到相关论文，无法生成综述。", "iteration": iteration}
 
     context = _format_papers(papers, state.get("analyses", []))
     user = (
@@ -48,15 +49,15 @@ async def run(state: ResearchState) -> ResearchState:
     feedback = state.get("feedback", "")
     existing_draft = (state.get("draft") or "").strip()
     if feedback and existing_draft:
-        # Refine 模式：用户传 instructions 改写已有 draft
+        # Refine 模式
         user += (
             f"\n\n【上一版综述（需改写）】\n{existing_draft}\n\n"
             f"【修改要求】\n{feedback}\n\n"
             "请只按修改要求改写，其他部分尽量保持原文。返回完整新版本。"
         )
-    elif feedback:  # 兜底：有 feedback 无 draft（理论上不该发生）
+    elif feedback:
         user += f"\n\n请基于以下要求生成综述：\n{feedback}"
 
     messages = [SystemMessage(content=SYSTEM), HumanMessage(content=user)]
     draft = await call_llm(messages, timeout=180)
-    return {"report_draft": draft, "iteration": iteration}
+    return {"draft": draft, "iteration": iteration}

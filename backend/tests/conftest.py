@@ -36,3 +36,21 @@ def _init_test_db():
     Base.metadata.create_all(engine)
     yield
     engine.dispose()
+
+
+@pytest.fixture
+def client():
+    """M4.5.1: TestClient 触发 lifespan → init_saver 在 TestClient 的 event loop 跑。
+    异步测试需要此 fixture；其他测试仍可独立用 TestClient(app)（不调 /api/research）。
+    """
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.agents import research_agent
+
+    target = Path(_TEST_DIR / "checkpoints.db")
+    original = research_agent.CHECKPOINTS_DB
+    research_agent.CHECKPOINTS_DB = target
+    with TestClient(app) as c:
+        yield c
+    research_agent.CHECKPOINTS_DB = original

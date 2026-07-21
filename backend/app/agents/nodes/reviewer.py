@@ -34,7 +34,7 @@ async def run(state: ResearchState) -> ResearchState:
     user = (
         f"子问题：\n{sub_qs}\n\n"
         f"合法 arxiv_id：{valid_ids}\n\n"
-        f"待审校综述：\n{state.get('report_draft', '')}"
+        f"待审校综述：\n{state.get('draft', '')}"
     )
     messages = [
         SystemMessage(content=SYSTEM.format(format_instructions=_parser.get_format_instructions())),
