@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ChatPanel } from './ChatPanel'
 import { chatQA, getSession, researchStream } from '@/lib/api'
 
@@ -105,5 +105,23 @@ describe('ChatPanel', () => {
       expect(screen.getByRole('button', { name: '问答模式' })).toHaveClass('bg-blue-500')
       expect(screen.getByRole('button', { name: '研究模式' })).not.toHaveClass('bg-blue-500')
     })
+  })
+
+  it('locks mode after first message — other button is disabled (qa case)', async () => {
+    // 发完第一条 qa 消息后，研究模式按钮应变灰（mode 锁定）
+    vi.mocked(chatQA).mockResolvedValue({
+      reply: 'hi back',
+      session_id: 'sess-lock',
+      echo: false,
+      citations: [],
+    })
+    const user = userEvent.setup()
+    renderPanel()
+    const input = screen.getByPlaceholderText('输入你的问题…')
+    await user.type(input, 'hi{Enter}')
+    // 等回复出现 = 消息发送完成
+    await screen.findByText('hi back')
+    expect(screen.getByRole('button', { name: '研究模式' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '问答模式' })).not.toBeDisabled()
   })
 })

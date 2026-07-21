@@ -143,18 +143,26 @@ export function ChatPanel() {
       <div className="border-b border-zinc-200 bg-white px-4 py-2 text-xs">
         <div className="mx-auto flex max-w-3xl items-center gap-3">
           <div className="inline-flex overflow-hidden rounded-md border border-zinc-300">
-            {(['qa', 'research'] as Mode[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                disabled={loading}
-                className={`px-3 py-1 ${
-                  mode === m ? 'bg-blue-500 text-white' : 'bg-white text-zinc-600 hover:bg-zinc-50'
-                } disabled:opacity-50`}
-              >
-                {m === 'qa' ? '问答模式' : '研究模式'}
-              </button>
-            ))}
+            {(['qa', 'research'] as Mode[]).map((m) => {
+              // 模式锁定：已发过消息的 session 不能再切另一模式。
+              // isLocked 来自 messages 长度——切到新 session 时 messages 被 useEffect 重置。
+              const isLocked = messages.length > 0
+              const isOtherMode = mode !== m
+              const disabled = loading || (isLocked && isOtherMode)
+              return (
+                <button
+                  key={m}
+                  onClick={() => !disabled && setMode(m)}
+                  disabled={disabled}
+                  title={isLocked && isOtherMode ? '该 session 模式已锁定' : undefined}
+                  className={`px-3 py-1 ${
+                    mode === m ? 'bg-blue-500 text-white' : 'bg-white text-zinc-600'
+                  } ${isLocked && isOtherMode ? 'cursor-not-allowed opacity-50' : 'hover:bg-zinc-50'}`}
+                >
+                  {m === 'qa' ? '问答模式' : '研究模式'}
+                </button>
+              )
+            })}
           </div>
           {mode === 'qa' && (
             <div className="min-w-0 flex-1">
