@@ -1015,12 +1015,12 @@ approved edit rejected
 
 ### 子阶段
 
-- **M5.5.0**：写计划（**当前**）✅
-- **M5.5.1**：ResearchPlan schema + planner node + state 字段 + interrupt 接入
-- **M5.5.2**：API 端点（generate/get/update/approve/reject）
-- **M5.5.3**：前端 Plan 卡片 + 编辑器 + 按钮
-- **M5.5.4**：测试（plan 生成、approve/reject 流程、编辑、跨轮 plan 复用、interrupt 边界）
-- **M5.5.5**：回写计划文档 + 决策日志 + 录 demo
+- **M5.5.0**：写计划 ✅
+- **M5.5.1**：ResearchPlan schema + planner node + state 字段 + interrupt 接入 ✅
+- **M5.5.2**：API 端点（generate/get/update/approve/reject）✅
+- **M5.5.3**：前端 Plan 卡片 + 编辑器 + 按钮 ✅
+- **M5.5.4**：测试（plan 生成、approve/reject 流程、编辑、跨轮 plan 复用、interrupt 边界）✅
+- **M5.5.5**：回写计划文档 + 决策日志 + 录 demo ✅
 
 ### 风险
 
@@ -1403,6 +1403,10 @@ class UploadConstraints:
 | 2026-07-19 | §12.11 实现：DB 表（research_states） + 同 session 自动续接 | 续接时注入 system note，论文累积去重，最后研究胜出 |
 | 2026-07-20 | §12.11 重构：**完全采用 langgraph 标准** — checkpointer 替代 DB 表 | AsyncSqliteSaver + thread_id=session_id，state_schema + ToolRuntime + Command；多 session 物理隔离；research_states 表删除 |
 | 2026-07-21 | M5.5 Plan 模块设计：用户可审可改的预执行计划 | 必走 + langgraph interrupt() + 含 outline + 跨轮 plan 锁住 |
+| 2026-07-21 | M5.5 Plan 模块实现：包 StateGraph 包 create_agent（subgraph） | `interrupt()` 不能在 tool 里调（resume 重跑副作用），拆成显式 planner_node → subgraph researcher |
+| 2026-07-21 | M5.5 Plan API：interrupt 后 API 兜底 `aupdate_state` 写 plan | langgraph `interrupt()` 抛 GraphInterrupt 时 node update 不会自动持久化 |
+| 2026-07-21 | M5.5 Plan LLM：with_structured_output 主路径 + JSON mode fallback | DeepSeek 对 with_structured_output 支持不稳；fallback 走 response_format=json_object + Pydantic |
+| 2026-07-21 | M5.5 前端：plan 卡片嵌入 messages 流（role='plan'）+ sseAbortRef 合并 | plan 复用消息流滚动；sseAbortRef / sseRunIdRef 一套机制管 plan + execute 两条流 |
 | 2026-07-17 | 测试隔离：conftest 指向临时 SQLite + 临时数据目录 | 测试不再污染 dev 库/reports；越早做越省事 |
 
 ---

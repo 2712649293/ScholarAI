@@ -47,6 +47,16 @@ async def close_saver() -> None:
     _conn = None
 
 
+def get_saver() -> AsyncSqliteSaver:
+    """M5.5：plan_graph 复用同一 saver（thread_id=session_id 共享 checkpointer）。
+
+    调用前必须 init_saver()（lifespan / TestClient lifespan 触发）。
+    """
+    if _saver is None:
+        raise RuntimeError("saver 未初始化：先在 lifespan 里调 init_saver()")
+    return _saver
+
+
 def build_agent() -> object:
     """构造带 checkpointer 的 ReAct agent。调用前必须 init_saver。"""
     if _saver is None:

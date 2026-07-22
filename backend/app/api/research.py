@@ -1,9 +1,10 @@
-"""研究模式 API（M4.5.1：langgraph checkpointer）。
+"""研究模式 API（M4.5.1：langgraph checkpointer + M5.5：plan 模块）。
 
 - 每次 /api/research：构造 initial state dict + thread_id=session_id 调 agent
 - checkpointer 自动按 thread_id 持久化整个 state（消息历史 + workflow 产物）
 - 跨轮 "agent 接着" = 同一 thread_id 下次 invoke 自动恢复 state
 - 多 session 物理隔离 = 不同 thread_id
+- M5.5：/api/research/plan 起 plan 流程 → interrupt → 等用户审 → approve 续接
 """
 from __future__ import annotations
 
@@ -11,11 +12,19 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langgraph.errors import GraphRecursionError
+from langgraph.types import Command
 
+from app.agents.plan_graph import build_plan_graph
 from app.agents.research_agent import RECURSION_LIMIT, build_agent
+from app.agents.schemas import (
+    ApproveRequest,
+    PlanEditRequest,
+    PlanRequest,
+    PlanResponse,
+)
 from app.config import settings
 from app.observability.callbacks import HANDLER
 from app.schemas.research import PaperOut, ResearchRequest, ResearchResponse
@@ -137,3 +146,203 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
         yield ": done\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# === M5.5 Plan API ===
+
+async def _plan_initial_state(req: PlanRequest, session_id: str) -> dict:
+    """plan 流程的初始 state。已有 plan 时不覆盖（让后续 POST /plan 仍是补生成）。"""
+    cap = DEPTH_CAP.get(req.depth, 20)
+    return {
+        "query": req.query,
+        "session_id": session_id,
+        "depth": req.depth,
+        "max_papers": min(req.max_papers, cap),
+    }
+
+
+async def _build_plan_graph():
+    """构造 plan graph。checkpointer 单例。"""
+    return build_plan_graph()
+
+
+@router.post("/plan", response_model=PlanResponse, status_code=202)
+async def start_plan(req: PlanRequest) -> PlanResponse:
+    """生成 plan：跑 planner node 触发 interrupt，返 plan + pending 状态。
+
+    行为：
+    - 新 session：planner 生成 plan → interrupt 暂停 → 兜底 aupdate_state 写 plan → 返 202
+    - 已有 plan：planner 不会重新生成（state.plan 已存在），interrupt 再次弹出让用户重审
+
+    ponytail：langgraph 的 interrupt() 抛 GraphInterrupt 时 node 不正常完成，
+    return 的 update 不会被 checkpointer 自动持久化。所以 start_plan 在 interrupt
+    抛出后显式 aupdate_state 把 plan 写进 state——保证 GET /{sid}/plan 立刻能拿到。
+    """
+    session = store.get_or_create(req.session_id, mode="research")
+    config = _agent_config(session.id)
+    graph = await _build_plan_graph()
+    initial = await _plan_initial_state(req, session.id)
+
+    # 跑直到 interrupt
+    interrupted_payload: dict | None = None
+    async for chunk in graph.astream(initial, config=config, stream_mode="updates"):
+        if "__interrupt__" in (chunk or {}):
+            interrupted_payload = chunk["__interrupt__"][0].value
+            break
+
+    # 兜底：把 plan 写入 state（langgraph 在 interrupt 时不会自动持久化 node update）
+    if interrupted_payload and interrupted_payload.get("plan"):
+        from datetime import datetime, timezone
+
+        await graph.aupdate_state(
+            config,
+            {
+                "plan": interrupted_payload["plan"],
+                "plan_status": "pending",
+                "plan_generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    # 读最新 state
+    snap = await graph.aget_state(config)
+    s = snap.values if snap else {}
+    if not s.get("plan"):
+        raise HTTPException(500, "planner 未生成 plan")
+
+    return PlanResponse(
+        session_id=session.id,
+        plan=s.get("plan"),
+        plan_status=s.get("plan_status") or "pending",
+        plan_generated_at=s.get("plan_generated_at"),
+    )
+
+
+@router.get("/{sid}/plan", response_model=PlanResponse)
+async def get_plan(sid: str) -> PlanResponse:
+    """读 checkpointer 里当前 plan 状态。"""
+    graph = await _build_plan_graph()
+    config = _agent_config(sid)
+    snap = await graph.aget_state(config)
+    if not snap:
+        return PlanResponse(session_id=sid, plan_status="none")
+    s = snap.values or {}
+    return PlanResponse(
+        session_id=sid,
+        plan=s.get("plan"),
+        plan_status=s.get("plan_status") or "none",
+        plan_generated_at=s.get("plan_generated_at"),
+    )
+
+
+@router.patch("/{sid}/plan", response_model=PlanResponse)
+async def edit_plan(sid: str, req: PlanEditRequest) -> PlanResponse:
+    """用户编辑 plan（不批准执行，只更新字段）。
+
+    ponytail：只覆盖客户端传的字段（merge），不删除其它 plan 字段；
+    status 强制设为 "edited"。
+    """
+    graph = await _build_plan_graph()
+    config = _agent_config(sid)
+    snap = await graph.aget_state(config)
+    if not snap or not snap.values.get("plan"):
+        raise HTTPException(404, "session 无 plan 可编辑")
+
+    cur = dict(snap.values)
+    merged = {**cur.get("plan", {}), **req.plan}
+    cur["plan"] = merged
+    cur["plan_status"] = "edited"
+    await graph.aupdate_state(config, cur)
+
+    return PlanResponse(
+        session_id=sid,
+        plan=merged,
+        plan_status="edited",
+        plan_generated_at=cur.get("plan_generated_at"),
+    )
+
+
+@router.post("/{sid}/plan/approve")
+async def approve_plan(sid: str, req: ApproveRequest | None = None) -> StreamingResponse:
+    """批准 plan → Command(resume=approve) → 续接跑 researcher（create_agent）→ SSE 推 step+final。"""
+    graph = await _build_plan_graph()
+    config = _agent_config(sid)
+
+    # 读当前 plan（可能有 PATCH 过的 edited_plan）
+    snap = await graph.aget_state(config)
+    if not snap or not snap.values.get("plan"):
+        raise HTTPException(404, "session 无 plan 可批准")
+    cur_plan = snap.values.get("plan")
+
+    # 优先用 req.edited_plan（PATCH 不调直接 approve 也可传）；否则用 state 当前 plan
+    edited = req.edited_plan if req else None
+
+    decision: dict = {"action": "approve"}
+    if edited:
+        decision["edited_plan"] = edited
+    elif snap.values.get("plan_status") == "edited":
+        # PATCH 后未传 edited_plan → 用 state 当前 plan
+        decision["edited_plan"] = cur_plan
+
+    async def gen():
+        try:
+            async for chunk in graph.astream(
+                Command(resume=decision), config=config, stream_mode="updates"
+            ):
+                if "__interrupt__" in (chunk or {}):
+                    # 不应再触发 interrupt；跳过
+                    continue
+                for update in (chunk or {}).values():
+                    for m in (update or {}).get("messages", []):
+                        for tc in getattr(m, "tool_calls", None) or []:
+                            yield _sse("step", {"node": tc["name"]})
+        except GraphRecursionError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            yield _sse("error", {"code": "internal_error", "message": str(e)})
+            return
+
+        # 读最终 state（researcher 跑完 → plan_status 应为 approved）
+        draft, report_path, papers = await _finalize(sid, graph, config)
+        yield _sse(
+            "final",
+            {
+                "session_id": sid,
+                "report_markdown": draft,
+                "report_path": report_path,
+                "papers": papers,
+            },
+        )
+        yield ": done\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.post("/{sid}/plan/reject", response_model=PlanResponse)
+async def reject_plan(sid: str) -> PlanResponse:
+    """拒绝 plan → Command(resume=reject) → END，state 标 rejected。
+
+    同时清空 plan 字段（让下次 POST /plan 能重新生成）。
+    """
+    graph = await _build_plan_graph()
+    config = _agent_config(sid)
+    snap = await graph.aget_state(config)
+    if not snap:
+        raise HTTPException(404, "session 不存在")
+
+    async for _ in graph.astream(
+        Command(resume={"action": "reject"}), config=config
+    ):
+        pass
+
+    # 清 plan 字段，避免下次 POST /plan 被 state.plan 残留拦截
+    cur = dict(snap.values)
+    cur["plan"] = None
+    cur["plan_status"] = "rejected"
+    await graph.aupdate_state(config, cur)
+
+    return PlanResponse(
+        session_id=sid,
+        plan=None,
+        plan_status="rejected",
+        plan_generated_at=cur.get("plan_generated_at"),
+    )

@@ -3,25 +3,38 @@ import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
+  approvePlanStream,
   chatQA,
   getSession,
   listKBs,
   researchStream,
+  rejectPlan,
+  startPlan,
+  updatePlan,
   ApiError,
   type Citation,
   type KB,
   type ResearchFinal,
+  type ResearchPlan,
 } from '@/lib/api'
 import { ResearchProgress, labelForTool } from '@/components/ResearchProgress'
+import { PlanCard } from '@/components/PlanCard'
 
 type Mode = 'qa' | 'research'
+type Phase = 'idle' | 'planning' | 'executing'
 
-interface Message {
+interface BaseMsg {
   role: 'user' | 'assistant'
   content: string
   citations?: Citation[]
-  markdown?: boolean // 研究综述 → markdown 渲染 + 下载
+  markdown?: boolean
 }
+interface PlanMsg {
+  role: 'plan'
+  plan: ResearchPlan
+  status: 'pending' | 'edited' | 'approved' | 'rejected'
+}
+type Message = BaseMsg | PlanMsg
 
 function downloadMd(content: string) {
   const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
@@ -38,7 +51,7 @@ export function ChatPanel() {
   const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | undefined>(routeSessionId)
   const [mode, setMode] = useState<Mode>('qa')
@@ -47,48 +60,39 @@ export function ChatPanel() {
   const [kbs, setKBs] = useState<KB[]>([])
   const [selectedKBs, setSelectedKBs] = useState<Set<string>>(new Set())
 
-  // M_bug_sse_isolation: 跨 session 隔离 research SSE。
-  // runId = 当前 in-flight 流的标识（与启动时的 sessionId 绑定），切换 session 时
-  // 旧流的回调里 runId 已不匹配 → 丢弃事件 + abort fetch。两条防线：
-  // 1) abortRef() 取消已发出请求（防后端继续推 SSE chunk）
-  // 2) runId 闭包校验（防 abort 已发出但客户端解析层还有残留 event 进来）
-  const researchAbortRef = useRef<(() => void) | null>(null)
-  const researchRunIdRef = useRef<number>(0)
+  // M_bug_sse_isolation + M5.5: 一套 sseAbortRef/sseRunIdRef 管 plan 和 execute 两条 SSE 流。
+  // - abortRef() 取消 fetch（防后端继续推 chunk）
+  // - runId 闭包校验（防 abort 已发但客户端 reader 残留 event）
+  const sseAbortRef = useRef<(() => void) | null>(null)
+  const sseRunIdRef = useRef<number>(0)
 
   useEffect(() => {
     listKBs().then(setKBs).catch(() => setKBs([]))
   }, [])
 
-  // M_bug_sse_isolation: 路由切到新 session 前，强制 abort 旧 in-flight SSE。
-  // 不 abort 的话：B 的研究流推 step/final 事件 → 旧闭包里的 setResearchSteps/setMessages/
-  // setLoading 把 A 的 state 搅乱 + navigate 把 URL 抢回 B。
+  // 路由切 session：abort 任何 in-flight 流 + runId 自增。
   useEffect(() => {
     return () => {
-      researchAbortRef.current?.()
-      researchAbortRef.current = null
-      // 让任何尚在 in-flight 的回调都被 token 校验拦下
-      researchRunIdRef.current++
+      sseAbortRef.current?.()
+      sseAbortRef.current = null
+      sseRunIdRef.current++
     }
   }, [routeSessionId])
 
-  // M2.6.6: 路由 session 变化时加载历史（点侧边栏 / 直接开 URL / 新对话）
+  // 路由 session 变化时加载历史（侧边栏切换 / 新对话 / 直接打开 URL）
   useEffect(() => {
     if (!routeSessionId) {
       setSessionId(undefined)
       setMessages([])
       setResearchSteps([])
       setError(null)
-      setLoading(false)
+      setPhase('idle')
       return
     }
-    if (routeSessionId === sessionId) return // 自己刚创建的，别重复拉
+    if (routeSessionId === sessionId) return
     setSessionId(routeSessionId)
     getSession(routeSessionId)
       .then((s) => {
-        // M_bug_fix: 无条件按 session.mode 设 mode（之前只 setMode('research') 导致
-        // 切到 qa session 时 local mode 仍残留 research）。
-        // 后端 get_or_create 在 session 创建时锁定 mode，已存在 session 不会更新——
-        // 所以 s.mode 就是该 session 的"出身模式"，按它设 local state 即可。
         setMode(s.mode as Mode)
         setMessages(
           s.messages
@@ -99,11 +103,9 @@ export function ChatPanel() {
               markdown: s.mode === 'research' && m.role === 'assistant',
             })),
         )
-        // 切 session 时清掉上一个 session 的 loading/researchSteps/error，
-        // 否则用户从在跑的 B 切回 A 会看到 B 的「研究步骤」+ 「加载中」。
         setResearchSteps([])
         setError(null)
-        setLoading(false)
+        setPhase('idle')
       })
       .catch(() => setMessages([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -118,33 +120,106 @@ export function ChatPanel() {
     })
   }
 
-  const canSend = input.trim().length > 0 && !loading
+  const canSend = input.trim().length > 0 && phase === 'idle'
 
-  function runResearch(query: string) {
+  /** M5.5: 启动 plan 流程。
+   *  - 调 POST /api/research/plan（一次性 fetch，< 5s）
+   *  - 成功 → plan 消息入流，phase=idle 让用户能继续打字
+   *  - 失败 → 错误提示，phase=idle
+   */
+  async function runPlan(query: string) {
+    setPhase('planning')
+    setError(null)
+    try {
+      const resp = await startPlan({ query, session_id: sessionId })
+      setSessionId(resp.session_id)
+      setMessages((m) => [
+        ...m,
+        { role: 'plan', plan: resp.plan!, status: resp.plan_status as PlanMsg['status'] },
+      ])
+      if (!routeSessionId) navigate(`/chat/${resp.session_id}`)
+      setPhase('idle')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err))
+      setPhase('idle')
+    }
+  }
+
+  /** M5.5: 批准 plan → 走 SSE 执行流。
+   *  - POST /api/research/{sid}/plan/approve（带可选 edited_plan）
+   *  - SSE 推 step + final
+   *  - final → 综述 markdown 入流
+   */
+  function runExecute(planMsgIndex: number, editedPlan?: ResearchPlan) {
+    if (!sessionId) return
+    setPhase('executing')
     setResearchSteps([])
-    // 起一个新 runId；任何旧回调里 runId 不匹配都直接丢弃（防止 abort 已发但
-    // 客户端 reader 还在解析残留 chunk 时把旧 event 写进新 session 的 state）。
-    const runId = ++researchRunIdRef.current
-    researchAbortRef.current?.() // 先取消上一次的 in-flight（如果有）
-    researchAbortRef.current = researchStream(
-      { query, session_id: sessionId, depth: 'normal' },
+    const runId = ++sseRunIdRef.current
+    sseAbortRef.current?.()
+    sseAbortRef.current = approvePlanStream(
+      sessionId,
+      editedPlan ?? null,
       (event, data) => {
-        if (runId !== researchRunIdRef.current) return // stale callback，跳过
+        if (runId !== sseRunIdRef.current) return
         if (event === 'step') {
           const { node } = data as { node: string }
           setResearchSteps((prev) => [...prev, labelForTool(node)])
         } else if (event === 'final') {
           const f = data as ResearchFinal
-          setSessionId(f.session_id)
-          setMessages((m) => [...m, { role: 'assistant', content: f.report_markdown, markdown: true }])
-          setLoading(false)
-          if (!routeSessionId) navigate(`/chat/${f.session_id}`)
+          // 标记 plan 消息为 approved
+          setMessages((m) =>
+            m.map((msg, i) =>
+              i === planMsgIndex && msg.role === 'plan'
+                ? { ...msg, status: 'approved' as const }
+                : msg,
+            ),
+          )
+          setMessages((m) => [
+            ...m,
+            { role: 'assistant', content: f.report_markdown, markdown: true },
+          ])
+          setPhase('idle')
         } else if (event === 'error') {
-          setError((data as { message?: string; code?: string }).message ?? '研究失败')
-          setLoading(false)
+          setError((data as { message?: string }).message ?? '执行失败')
+          setPhase('idle')
         }
       },
     )
+  }
+
+  /** 用户点 "拒绝" → 调 reject endpoint，卡片变灰。 */
+  async function handleReject(planMsgIndex: number) {
+    if (!sessionId) return
+    try {
+      await rejectPlan(sessionId)
+      setMessages((m) =>
+        m.map((msg, i) =>
+          i === planMsgIndex && msg.role === 'plan'
+            ? { ...msg, status: 'rejected' as const }
+            : msg,
+        ),
+      )
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err))
+    }
+  }
+
+  /** 用户点 "保存编辑" → PATCH 后状态变 edited（仍 pending 行为）。 */
+  async function handleSaveEdit(planMsgIndex: number, patch: Partial<ResearchPlan>) {
+    if (!sessionId) return
+    try {
+      await updatePlan(sessionId, patch)
+      // 用 patch 更新本地 plan 消息
+      setMessages((m) =>
+        m.map((msg, i) => {
+          if (i !== planMsgIndex || msg.role !== 'plan') return msg
+          const merged = { ...msg.plan, ...patch }
+          return { ...msg, plan: merged, status: 'edited' as const }
+        }),
+      )
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err))
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -153,14 +228,16 @@ export function ChatPanel() {
     const query = input.trim()
     setMessages((m) => [...m, { role: 'user', content: query }])
     setInput('')
-    setLoading(true)
     setError(null)
 
     if (mode === 'research') {
-      runResearch(query)
+      // M5.5: 研究模式先走 plan 流程；用户批准后才进 execute
+      runPlan(query)
       return
     }
 
+    // QA 模式
+    setPhase('planning') // 借用 phase='planning' 显示"思考中…"
     try {
       const { reply, session_id, citations } = await chatQA(query, sessionId, Array.from(selectedKBs))
       setSessionId(session_id)
@@ -169,7 +246,7 @@ export function ChatPanel() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err))
     } finally {
-      setLoading(false)
+      setPhase('idle')
     }
   }
 
@@ -180,11 +257,9 @@ export function ChatPanel() {
         <div className="mx-auto flex max-w-3xl items-center gap-3">
           <div className="inline-flex overflow-hidden rounded-md border border-zinc-300">
             {(['qa', 'research'] as Mode[]).map((m) => {
-              // 模式锁定：已发过消息的 session 不能再切另一模式。
-              // isLocked 来自 messages 长度——切到新 session 时 messages 被 useEffect 重置。
               const isLocked = messages.length > 0
               const isOtherMode = mode !== m
-              const disabled = loading || (isLocked && isOtherMode)
+              const disabled = phase !== 'idle' || (isLocked && isOtherMode)
               return (
                 <button
                   key={m}
@@ -223,7 +298,7 @@ export function ChatPanel() {
             </div>
           )}
           {mode === 'research' && (
-            <span className="text-zinc-400">给个研究方向，自动检索 arxiv 生成综述</span>
+            <span className="text-zinc-400">给个研究方向，自动生成研究计划等你审</span>
           )}
         </div>
       </div>
@@ -236,11 +311,28 @@ export function ChatPanel() {
               {mode === 'qa' ? '开始对话吧' : '输入研究方向，例如「LLM 推理加速」'}
             </p>
           )}
-          {messages.map((m, i) => (
-            <MessageBubble key={i} msg={m} />
-          ))}
-          {loading && mode === 'research' && <ResearchProgress steps={researchSteps} />}
-          {loading && mode === 'qa' && (
+          {messages.map((m, i) => {
+            if (m.role === 'plan') {
+              return (
+                <PlanCard
+                  key={i}
+                  plan={m.plan}
+                  status={m.status}
+                  onApprove={() => runExecute(i)}
+                  onReject={() => handleReject(i)}
+                  onSave={(patch) => handleSaveEdit(i, patch)}
+                />
+              )
+            }
+            return <MessageBubble key={i} msg={m} />
+          })}
+          {phase === 'planning' && mode === 'research' && (
+            <div className="mr-auto max-w-[80%] rounded-lg bg-white px-4 py-2 text-sm text-zinc-400 shadow-sm">
+              正在生成研究计划…
+            </div>
+          )}
+          {phase === 'executing' && <ResearchProgress steps={researchSteps} />}
+          {phase === 'planning' && mode === 'qa' && (
             <div className="mr-auto max-w-[80%] rounded-lg bg-white px-4 py-2 text-sm text-zinc-400 shadow-sm">
               思考中…
             </div>
@@ -259,7 +351,7 @@ export function ChatPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={mode === 'qa' ? '输入你的问题…' : '输入研究方向…'}
-            disabled={loading}
+            disabled={phase !== 'idle'}
             className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-400 disabled:bg-zinc-100"
           />
           <button
@@ -275,7 +367,7 @@ export function ChatPanel() {
   )
 }
 
-function MessageBubble({ msg }: { msg: Message }) {
+function MessageBubble({ msg }: { msg: BaseMsg }) {
   if (msg.role === 'user') {
     return (
       <div className="ml-auto max-w-[80%] rounded-lg bg-blue-500 px-4 py-2 text-sm text-white">

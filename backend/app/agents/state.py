@@ -34,3 +34,8 @@ class ResearchState(TypedDict, total=False):
     draft: str  # 综述草稿（refine 模式用此字段做 diff）
     feedback: str  # 审校意见
     iteration: int
+
+    # === Plan 模块（M5.5：用户可审可改的预执行计划）===
+    plan: dict | None  # ResearchPlan.model_dump()
+    plan_status: str  # "pending" | "edited" | "approved" | "rejected"
+    plan_generated_at: str | None  # ISO timestamp（plan 首次生成时间）

@@ -260,3 +260,104 @@ export function researchStream(
   })().catch((err) => onEvent('error', { message: String(err) }))
   return () => ctrl.abort()
 }
+
+// === Plan（M5.5：用户可审可改的研究计划）===
+
+export interface PlanSubQuestion {
+  question: string
+  rationale: string
+}
+
+export interface PlanSearchQueryGroup {
+  intent: string
+  queries: string[]
+}
+
+export interface PlanOutlineSection {
+  heading: string
+  bullets: string[]
+}
+
+export interface ResearchPlan {
+  title: string
+  sub_questions: PlanSubQuestion[]
+  search_queries: PlanSearchQueryGroup[]
+  outline: PlanOutlineSection[]
+  estimated_papers: number
+  reasoning: string
+}
+
+export type PlanStatus = 'pending' | 'edited' | 'approved' | 'rejected' | 'none'
+
+export interface PlanResponse {
+  session_id: string
+  plan: ResearchPlan | null
+  plan_status: PlanStatus
+  plan_generated_at: string | null
+}
+
+export function getPlan(sessionId: string): Promise<PlanResponse> {
+  return getJson<PlanResponse>(`/api/research/${sessionId}/plan`)
+}
+
+// startPlan: 一次性 POST 触发 planner，返 PlanResponse（plan_status="pending"）。
+// ponytail：不走 SSE——plan 生成 < 5s，前端 spinner 即可，SSE 留给执行阶段。
+export function startPlan(body: {
+  query: string
+  session_id?: string
+  depth?: 'quick' | 'normal' | 'deep'
+  max_papers?: number
+}): Promise<PlanResponse> {
+  return postJson<PlanResponse>('/api/research/plan', body)
+}
+
+export function updatePlan(
+  sessionId: string,
+  patch: Partial<ResearchPlan>,
+): Promise<PlanResponse> {
+  return patchJson<PlanResponse>(`/api/research/${sessionId}/plan`, { plan: patch })
+}
+
+export function rejectPlan(sessionId: string): Promise<PlanResponse> {
+  return postJson<PlanResponse>(`/api/research/${sessionId}/plan/reject`, {})
+}
+
+// approvePlan 走 SSE（SSE 推到 step + final），复用 researchStream 的 SSE 解析器。
+// 区别：endpoint 是 /api/research/{sid}/plan/approve，body 不需要 query（state 已有）。
+export function approvePlanStream(
+  sessionId: string,
+  editedPlan: ResearchPlan | null,
+  onEvent: (event: string, data: unknown) => void,
+): () => void {
+  const ctrl = new AbortController()
+  ;(async () => {
+    const res = await fetch(`/api/research/${sessionId}/plan/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(editedPlan ? { edited_plan: editedPlan } : {}),
+      signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        let event = 'message'
+        let data = ''
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        if (data) onEvent(event, JSON.parse(data))
+      }
+    }
+  })().catch((err) => onEvent('error', { message: String(err) }))
+  return () => ctrl.abort()
+}
