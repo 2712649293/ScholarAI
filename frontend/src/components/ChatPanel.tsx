@@ -200,6 +200,16 @@ export function ChatPanel() {
     if (!sessionId) return
     setPhase('executing')
     setResearchSteps([])
+    // M5.5.7: 批准瞬间立即把 plan.status 改 approved——按钮区立刻 readonly，
+    // 防止 researcher 跑期间用户重复点编辑/拒绝。
+    // error handler 失败时回滚到 pending。
+    setMessages((m) =>
+      m.map((msg, i) =>
+        i === planMsgIndex && msg.role === 'plan'
+          ? { ...msg, status: 'approved' as const }
+          : msg,
+      ),
+    )
     const runId = ++sseRunIdRef.current
     sseAbortRef.current?.()
     sseAbortRef.current = approvePlanStream(
@@ -212,14 +222,7 @@ export function ChatPanel() {
           setResearchSteps((prev) => [...prev, labelForTool(node)])
         } else if (event === 'final') {
           const f = data as ResearchFinal
-          // 标记 plan 消息为 approved
-          setMessages((m) =>
-            m.map((msg, i) =>
-              i === planMsgIndex && msg.role === 'plan'
-                ? { ...msg, status: 'approved' as const }
-                : msg,
-            ),
-          )
+          // plan.status 已在函数开头设为 approved（幂等保留）
           setMessages((m) => [
             ...m,
             { role: 'assistant', content: f.report_markdown, markdown: true },
@@ -229,6 +232,16 @@ export function ChatPanel() {
           setHasApprovedPlan(true)
           hasApprovedPlanRef.current = true
         } else if (event === 'error') {
+          // 回滚：plan 回到 pending 让用户能重新编辑/拒绝/批准
+          setMessages((m) =>
+            m.map((msg, i) =>
+              i === planMsgIndex && msg.role === 'plan'
+                ? { ...msg, status: 'pending' as const }
+                : msg,
+            ),
+          )
+          setHasApprovedPlan(false)
+          hasApprovedPlanRef.current = false
           setError((data as { message?: string }).message ?? '执行失败')
           setPhase('idle')
         }

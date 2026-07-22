@@ -556,4 +556,93 @@ describe('ChatPanel', () => {
     // phase=idle → 输入框 enabled（按钮 disabled 是因 input 空，handleSubmit 后 setInput('')）
     expect(screen.getByPlaceholderText('输入研究方向…')).not.toBeDisabled()
   })
+
+  // === M5.5.7 · 批准瞬间锁定 ===
+
+  it('M5.5.7: 点批准瞬间 plan 卡片立即 readonly（不等 SSE final），按钮消失', async () => {
+    // mock approvePlanStream 不立即推 final（让 executing 态持续），验证此时按钮已 readonly
+    vi.mocked(startPlan).mockResolvedValue({
+      session_id: 'sess-lock',
+      plan: {
+        title: 'lock',
+        sub_questions: [{ question: 'q', rationale: 'r' }],
+        search_queries: [{ intent: 'i', queries: ['s'] }],
+        outline: [{ heading: 'h', bullets: ['b'] }],
+        estimated_papers: 5,
+        reasoning: '',
+      },
+      plan_status: 'pending',
+      plan_generated_at: '',
+    } as never)
+    let finalCb: ((event: string, data: unknown) => void) | null = null
+    vi.mocked(approvePlanStream).mockImplementation((_sid, _p, onEvent) => {
+      // 暂存 callback，不推 final
+      finalCb = onEvent
+      return () => {}
+    })
+
+    const user = userEvent.setup()
+    renderPanel()
+    await user.click(screen.getByRole('button', { name: '研究模式' }))
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'X{Enter}')
+    await screen.findByText((c, e) => e?.tagName === 'DIV' && c.includes('lock'))
+
+    // 点批准——SSE 流启动但 final 未推
+    await user.click(screen.getByRole('button', { name: /批准并开始/ }))
+
+    // 关键断言：final 未到达，plan 卡片已 readonly（"已批准"角标出现）
+    // 等 DOM 落地——StatusBadge 文本 "✓ 已批准" 唯一
+    await screen.findByText('✓ 已批准')
+    // 三个操作按钮都不在
+    expect(screen.queryByRole('button', { name: /批准并开始/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /拒绝/ })).not.toBeInTheDocument()
+    // 编辑按钮也不在（PlanCard 用 ✏️ emoji）
+    expect(screen.queryByRole('button', { name: /编辑/ })).not.toBeInTheDocument()
+
+    // 推 final 让流走完，避免未处理 promise 警告
+    finalCb!('final', {
+      session_id: 'sess-lock',
+      report_markdown: '# v1',
+      report_path: 'data/reports/sess-lock.md',
+      papers: [],
+    })
+  })
+
+  it('M5.5.7: 批准 SSE 失败时 plan 回滚到 pending，按钮恢复可点', async () => {
+    vi.mocked(startPlan).mockResolvedValue({
+      session_id: 'sess-fail',
+      plan: {
+        title: 'fail',
+        sub_questions: [{ question: 'q', rationale: 'r' }],
+        search_queries: [{ intent: 'i', queries: ['s'] }],
+        outline: [{ heading: 'h', bullets: ['b'] }],
+        estimated_papers: 5,
+        reasoning: '',
+      },
+      plan_status: 'pending',
+      plan_generated_at: '',
+    } as never)
+    vi.mocked(approvePlanStream).mockImplementation((_sid, _p, onEvent) => {
+      // 推 error 事件（模拟 researcher 跑挂）
+      onEvent('error', { message: 'agent 挂了' })
+      return () => {}
+    })
+
+    const user = userEvent.setup()
+    renderPanel()
+    await user.click(screen.getByRole('button', { name: '研究模式' }))
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'X{Enter}')
+    await screen.findByText((c, e) => e?.tagName === 'DIV' && c.includes('fail'))
+    await user.click(screen.getByRole('button', { name: /批准并开始/ }))
+
+    // error 事件触发后，plan 应回滚到 pending，三个按钮重新出现
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /批准并开始/ })).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: /拒绝/ })).toBeInTheDocument()
+    // 错误提示出现
+    expect(screen.getByText(/agent 挂了/)).toBeInTheDocument()
+    // hasApprovedPlan reset false（后续追问不会走 runFollowup 路径）
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled()
+  })
 })
