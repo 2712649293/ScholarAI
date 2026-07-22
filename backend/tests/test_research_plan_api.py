@@ -244,3 +244,85 @@ def test_reject_allows_regenerate(client: TestClient):
     assert r3.status_code == 202
     assert r3.json()["plan_status"] == "pending"
     assert r3.json()["plan"]["title"] == "LLM 推理综述"  # mock plan 的 title
+
+
+# === M5.5.6 · 多轮追问 ===
+
+def test_start_plan_guard_returns_approved_when_already_approved(client: TestClient):
+    """M5.5.6 guard: 已 approved 时再 POST /plan → 不跑 planner，直接返 PlanResponse{status:approved}。"""
+    # 先生成 plan + 批准
+    with _patch_planner_llm():
+        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-guard"})
+        sid = r1.json()["session_id"]
+
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+
+    class ScriptedModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+    SCRIPT = [AIMessage(content="done")]
+    with patch("app.agents.research_agent.get_llm", return_value=ScriptedModel(responses=SCRIPT)):
+        client.post(f"/api/research/{sid}/plan/approve")
+
+    # 再次 POST /plan → guard 拦下，不跑 planner，返 approved
+    with _patch_planner_llm():
+        r2 = client.post("/api/research/plan", json={"query": "q2", "session_id": sid})
+    assert r2.status_code == 202
+    data = r2.json()
+    assert data["plan_status"] == "approved"
+    assert data["plan"] is not None
+    assert data["plan"]["title"] == "LLM 推理综述"
+
+
+def test_continue_requires_approved_status(client: TestClient):
+    """未 approved 时 POST /continue → 409。"""
+    # 先生成 plan 但不批准
+    with _patch_planner_llm():
+        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-c1"})
+        sid = r1.json()["session_id"]
+
+    r2 = client.post(f"/api/research/{sid}/continue/stream", json={"query": "追问"})
+    assert r2.status_code == 409
+
+
+def test_continue_after_approved_returns_sse(client: TestClient):
+    """approved 后 POST /continue → 走 SSE，含 step + final。"""
+    # 先生成 plan + 批准
+    with _patch_planner_llm():
+        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-c2"})
+        sid = r1.json()["session_id"]
+
+    # 模拟批准 + researcher 跑出 tool calls
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+
+    class ScriptedApproveModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+    # approve: 不调 tool 直接 final
+    SCRIPT_APPROVE = [AIMessage(content="approved")]
+    with patch("app.agents.research_agent.get_llm", return_value=ScriptedApproveModel(responses=SCRIPT_APPROVE)):
+        client.post(f"/api/research/{sid}/plan/approve")
+
+    # continue: 模拟 agent 调 write_review 后 final
+    class ScriptedContinueModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+    SCRIPT_CONTINUE = [AIMessage(content="done")]
+    with patch("app.agents.research_agent.get_llm", return_value=ScriptedContinueModel(responses=SCRIPT_CONTINUE)):
+        r2 = client.post(f"/api/research/{sid}/continue/stream", json={"query": "翻译成英文"})
+
+    assert r2.status_code == 200
+    body = r2.text
+    assert "text/event-stream" in r2.headers.get("content-type", "")
+    assert "event: final" in body
+
+
+def test_continue_unknown_session_returns_409(client: TestClient):
+    """不存在 / 未 plan 的 session 调 /continue → 409（plan_status 不是 approved）。"""
+    r = client.post("/api/research/no-such-sid-c/continue/stream", json={"query": "x"})
+    assert r.status_code == 409

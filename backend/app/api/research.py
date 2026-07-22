@@ -1,10 +1,11 @@
-"""研究模式 API（M4.5.1：langgraph checkpointer + M5.5：plan 模块）。
+"""研究模式 API（M4.5.1：langgraph checkpointer + M5.5：plan 模块 + M5.5.6：多轮追问）。
 
 - 每次 /api/research：构造 initial state dict + thread_id=session_id 调 agent
 - checkpointer 自动按 thread_id 持久化整个 state（消息历史 + workflow 产物）
 - 跨轮 "agent 接着" = 同一 thread_id 下次 invoke 自动恢复 state
 - 多 session 物理隔离 = 不同 thread_id
 - M5.5：/api/research/plan 起 plan 流程 → interrupt → 等用户审 → approve 续接
+- M5.5.6：/api/research/{sid}/continue 追问 —— 跳过 planner，调 build_agent()
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
@@ -21,6 +23,7 @@ from app.agents.plan_graph import build_plan_graph
 from app.agents.research_agent import RECURSION_LIMIT, build_agent
 from app.agents.schemas import (
     ApproveRequest,
+    ContinueRequest,
     PlanEditRequest,
     PlanRequest,
     PlanResponse,
@@ -173,6 +176,7 @@ async def start_plan(req: PlanRequest) -> PlanResponse:
     行为：
     - 新 session：planner 生成 plan → interrupt 暂停 → 兜底 aupdate_state 写 plan → 返 202
     - 已有 plan：planner 不会重新生成（state.plan 已存在），interrupt 再次弹出让用户重审
+    - 已 approved（M5.5.6）：直接返当前 PlanResponse，不再弹 plan 卡片（追问走 /continue）
 
     ponytail：langgraph 的 interrupt() 抛 GraphInterrupt 时 node 不正常完成，
     return 的 update 不会被 checkpointer 自动持久化。所以 start_plan 在 interrupt
@@ -181,6 +185,18 @@ async def start_plan(req: PlanRequest) -> PlanResponse:
     session = store.get_or_create(req.session_id, mode="research")
     config = _agent_config(session.id)
     graph = await _build_plan_graph()
+
+    # M5.5.6 guard: 已 approved → 直接返当前状态，不跑 planner（追问该走 /continue）
+    snap = await graph.aget_state(config)
+    if snap and snap.values.get("plan_status") == "approved":
+        s = snap.values
+        return PlanResponse(
+            session_id=session.id,
+            plan=s.get("plan"),
+            plan_status="approved",
+            plan_generated_at=s.get("plan_generated_at"),
+        )
+
     initial = await _plan_initial_state(req, session.id)
 
     # 跑直到 interrupt
@@ -346,3 +362,65 @@ async def reject_plan(sid: str) -> PlanResponse:
         plan_status="rejected",
         plan_generated_at=cur.get("plan_generated_at"),
     )
+
+
+# === M5.5.6 多轮追问 ===
+
+@router.post("/{sid}/continue/stream")
+async def continue_research_stream(
+    sid: str, req: ContinueRequest
+) -> StreamingResponse:
+    """追问：跳过 planner，直接调 build_agent()，新 query 作为 HumanMessage 追加到 state.messages。
+
+    - 校验 plan_status=='approved'，否则 409（未 plan / plan pending 时追问应先走 /plan）
+    - checkpointer 共享：state 自动恢复（含 plan / draft / papers / 历史 messages）
+    - input 只传 {"messages": [HumanMessage(query)]}，不覆盖 query/depth/max_papers
+    - agent 看到 history + 新 query，按 SYSTEM_PROMPT 意图识别调工具：
+      "修改综述" → write_review；"再检索" → search_arxiv；"问答" → 不调工具
+    - SSE 协议同 /plan/approve：step + final + :done
+    - 末尾 _finalize 复用写 store 逻辑
+    """
+    config = _agent_config(sid)
+
+    # 1) 校验：plan_status 必须 approved
+    graph = await _build_plan_graph()
+    snap = await graph.aget_state(config)
+    if not snap or snap.values.get("plan_status") != "approved":
+        raise HTTPException(
+            409, "session 未通过 plan，请先 POST /api/research/plan 并批准"
+        )
+
+    # 2) 直接调 build_agent()，共享 saver
+    agent = build_agent()
+    new_human = HumanMessage(content=req.query)
+
+    async def gen():
+        try:
+            async for chunk in agent.astream(
+                {"messages": [new_human]},
+                stream_mode="updates",
+                config=config,
+            ):
+                for update in (chunk or {}).values():
+                    for m in (update or {}).get("messages", []):
+                        for tc in getattr(m, "tool_calls", None) or []:
+                            yield _sse("step", {"node": tc["name"]})
+        except GraphRecursionError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            yield _sse("error", {"code": "internal_error", "message": str(e)})
+            return
+
+        draft, report_path, papers = await _finalize(sid, agent, config)
+        yield _sse(
+            "final",
+            {
+                "session_id": sid,
+                "report_markdown": draft,
+                "report_path": report_path,
+                "papers": papers,
+            },
+        )
+        yield ": done\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

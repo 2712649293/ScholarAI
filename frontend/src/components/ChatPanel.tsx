@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import {
   approvePlanStream,
   chatQA,
+  continueResearchStream,
   getSession,
   listKBs,
   researchStream,
@@ -60,6 +61,12 @@ export function ChatPanel() {
   const [kbs, setKBs] = useState<KB[]>([])
   const [selectedKBs, setSelectedKBs] = useState<Set<string>>(new Set())
 
+  // M5.5.6: 已 approved plan 后再发方向 → 走 runFollowup（跳 planner，直接进 researcher）。
+  // ponytail：useState 异步批处理 + React 闭包拿快照——handleSubmit 在 setState 后
+  // 同步读时可能拿到旧值。用 ref 同步存，state 留作渲染用。
+  const [hasApprovedPlan, setHasApprovedPlan] = useState(false)
+  const hasApprovedPlanRef = useRef(false)
+
   // M_bug_sse_isolation + M5.5: 一套 sseAbortRef/sseRunIdRef 管 plan 和 execute 两条 SSE 流。
   // - abortRef() 取消 fetch（防后端继续推 chunk）
   // - runId 闭包校验（防 abort 已发但客户端 reader 残留 event）
@@ -87,6 +94,8 @@ export function ChatPanel() {
       setResearchSteps([])
       setError(null)
       setPhase('idle')
+      setHasApprovedPlan(false)
+      hasApprovedPlanRef.current = false
       return
     }
     if (routeSessionId === sessionId) return
@@ -106,6 +115,8 @@ export function ChatPanel() {
         setResearchSteps([])
         setError(null)
         setPhase('idle')
+        // ponytail：不在这里 reset hasApprovedPlan——只让切到"空 session"分支 reset。
+        // 中途 setSessionId 触发的 re-render 不应清掉 approved 状态（否则追问路径断）。
       })
       .catch(() => setMessages([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -130,6 +141,8 @@ export function ChatPanel() {
   async function runPlan(query: string) {
     setPhase('planning')
     setError(null)
+    setHasApprovedPlan(false) // 新 plan 流程开始，旧 approved 状态清掉
+    hasApprovedPlanRef.current = false
     try {
       const resp = await startPlan({ query, session_id: sessionId })
       setSessionId(resp.session_id)
@@ -143,6 +156,39 @@ export function ChatPanel() {
       setError(err instanceof ApiError ? err.message : String(err))
       setPhase('idle')
     }
+  }
+
+  /** M5.5.6: 追问 — 已 approved plan 后再发方向，跳过 planner，调 /continue/stream。
+   *  与 runExecute 几乎一样，只是 endpoint 不同、不再 map plan 状态、不传 edited_plan。
+   */
+  function runFollowup(query: string) {
+    if (!sessionId) return
+    setPhase('executing')
+    setResearchSteps([])
+    const runId = ++sseRunIdRef.current
+    sseAbortRef.current?.()
+    sseAbortRef.current = continueResearchStream(
+      sessionId,
+      query,
+      (event, data) => {
+        if (runId !== sseRunIdRef.current) return
+        if (event === 'step') {
+          const { node } = data as { node: string }
+          setResearchSteps((prev) => [...prev, labelForTool(node)])
+        } else if (event === 'final') {
+          const f = data as ResearchFinal
+          // 追加新一条 assistant markdown（不替换旧 draft —— 每轮对话独立）
+          setMessages((m) => [
+            ...m,
+            { role: 'assistant', content: f.report_markdown, markdown: true },
+          ])
+          setPhase('idle')
+        } else if (event === 'error') {
+          setError((data as { message?: string }).message ?? '执行失败')
+          setPhase('idle')
+        }
+      },
+    )
   }
 
   /** M5.5: 批准 plan → 走 SSE 执行流。
@@ -179,6 +225,9 @@ export function ChatPanel() {
             { role: 'assistant', content: f.report_markdown, markdown: true },
           ])
           setPhase('idle')
+          // M5.5.6: approve 完成后进入"可追问"状态
+          setHasApprovedPlan(true)
+          hasApprovedPlanRef.current = true
         } else if (event === 'error') {
           setError((data as { message?: string }).message ?? '执行失败')
           setPhase('idle')
@@ -199,6 +248,9 @@ export function ChatPanel() {
             : msg,
         ),
       )
+      // M5.5.6: rejected 后再发方向 → 回 runPlan 路径重新生成 plan
+      setHasApprovedPlan(false)
+      hasApprovedPlanRef.current = false
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err))
     }
@@ -231,8 +283,11 @@ export function ChatPanel() {
     setError(null)
 
     if (mode === 'research') {
-      // M5.5: 研究模式先走 plan 流程；用户批准后才进 execute
-      runPlan(query)
+      if (hasApprovedPlanRef.current) {
+        runFollowup(query)
+      } else {
+        runPlan(query)
+      }
       return
     }
 

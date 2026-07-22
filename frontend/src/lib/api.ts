@@ -361,3 +361,43 @@ export function approvePlanStream(
   })().catch((err) => onEvent('error', { message: String(err) }))
   return () => ctrl.abort()
 }
+
+// M5.5.6 · 追问：已 approved plan 后续问问题时跳过 planner，直接进 researcher。
+// 协议与 approvePlanStream 完全一致（step + final + :done），body 改传 query。
+export function continueResearchStream(
+  sessionId: string,
+  query: string,
+  onEvent: (event: string, data: unknown) => void,
+): () => void {
+  const ctrl = new AbortController()
+  ;(async () => {
+    const res = await fetch(`/api/research/${sessionId}/continue/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ query }),
+      signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        let event = 'message'
+        let data = ''
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        if (data) onEvent(event, JSON.parse(data))
+      }
+    }
+  })().catch((err) => onEvent('error', { message: String(err) }))
+  return () => ctrl.abort()
+}

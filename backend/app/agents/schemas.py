@@ -65,6 +65,15 @@ class ApproveRequest(BaseModel):
     edited_plan: dict | None = None  # 可选：批准时传最终 plan
 
 
+class ContinueRequest(BaseModel):
+    """POST /api/research/{sid}/continue 追问请求（M5.5.6）。
+
+    ponytail：只传 query，agent 通过 checkpointer 自动恢复 state（含 plan / draft / papers）。
+    """
+
+    query: str
+
+
 # === API 响应 ===
 class PlanResponse(BaseModel):
     """plan 状态读取响应（GET / PATCH / reject / regenerate 共用）。"""

@@ -9,6 +9,7 @@ import {
   researchStream,
   startPlan,
   approvePlanStream,
+  continueResearchStream,
   rejectPlan,
   updatePlan,
 } from '@/lib/api'
@@ -23,12 +24,19 @@ vi.mock('@/lib/api', () => ({
   approvePlanStream: vi.fn(),
   rejectPlan: vi.fn(),
   updatePlan: vi.fn(),
+  // M5.5.6 追问
+  continueResearchStream: vi.fn(),
   ApiError: class extends Error {},
 }))
 
 const renderPanel = () => render(<ChatPanel />, { wrapper: MemoryRouter })
 
 describe('ChatPanel', () => {
+  beforeEach(() => {
+    // M5.5.6: 各测试间清 mock 状态，避免调用次数跨测试累加
+    vi.clearAllMocks()
+    vi.mocked(getSession).mockResolvedValue({ messages: [] } as never)
+  })
   it('disables send button when input is empty', () => {
     renderPanel()
     const btn = screen.getByRole('button', { name: '发送' })
@@ -193,8 +201,8 @@ describe('ChatPanel', () => {
   it('cross-session isolation: stale SSE events from prior execute run are dropped (token filter)', async () => {
     // M_bug_sse_isolation 二次防线：runId ref 让 stale 回调即便绕过 abort 也会被丢弃。
     // 场景：第一次 runExecute 推 final 让 phase=idle（但 onEvent 引用保留），
-    // 第二次 startPlan + approve → execute 推 final 让"新报告"出现；然后用 stale 引用推 final，
-    // 应被 runId 自增拦下，stale 文本不应出现。
+    // 第二次 runFollowup（已 approved plan）走 continueResearchStream 推 final 让"新报告"出现；
+    // 然后用 stale 引用推 final，应被 runId 自增拦下，stale 文本不应出现。
     let staleOnEvent: ((event: string, data: unknown) => void) | null = null
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-a',
@@ -209,27 +217,26 @@ describe('ChatPanel', () => {
       plan_status: 'pending',
       plan_generated_at: '',
     } as never)
-    vi.mocked(approvePlanStream)
-      .mockImplementationOnce((_sid, _plan, onEvent) => {
-        staleOnEvent = onEvent
-        // 立即推 final 让 phase=idle（用户能继续发）
-        onEvent('final', {
-          session_id: 'sess-old',
-          report_markdown: '# 旧报告',
-          report_path: 'data/reports/old.md',
-          papers: [],
-        })
-        return vi.fn()
+    vi.mocked(approvePlanStream).mockImplementationOnce((_sid, _plan, onEvent) => {
+      staleOnEvent = onEvent
+      // 立即推 final 让 phase=idle（用户能继续发）
+      onEvent('final', {
+        session_id: 'sess-old',
+        report_markdown: '# 旧报告',
+        report_path: 'data/reports/old.md',
+        papers: [],
       })
-      .mockImplementationOnce((_sid, _plan, onEvent) => {
-        onEvent('final', {
-          session_id: 'sess-new',
-          report_markdown: '# 新报告',
-          report_path: 'data/reports/sess-new.md',
-          papers: [],
-        })
-        return vi.fn()
+      return vi.fn()
+    })
+    vi.mocked(continueResearchStream).mockImplementationOnce((_sid, _q, onEvent) => {
+      onEvent('final', {
+        session_id: 'sess-new',
+        report_markdown: '# 新报告',
+        report_path: 'data/reports/sess-new.md',
+        papers: [],
       })
+      return vi.fn()
+    })
     vi.mocked(getSession).mockResolvedValue({ mode: 'research', messages: [] } as never)
 
     renderPanel()
@@ -244,13 +251,9 @@ describe('ChatPanel', () => {
     await screen.findByText('旧报告') // 第一次 execute final 落地
     expect(staleOnEvent).not.toBeNull()
 
-    // 第二次研究方向（在 staleOnEvent 引用之外独立发）
+    // 第二次研究方向（已 approved plan → runFollowup → continueResearchStream）
     await user.type(screen.getByPlaceholderText('输入研究方向…'), 'RAG{Enter}')
-    // 第二个 plan 卡片出现（标题含 "p1"），点第二个卡片里的批准按钮
-    await screen.findAllByRole('button', { name: /批准并开始/ })
-    const approveBtns = screen.getAllByRole('button', { name: /批准并开始/ })
-    await user.click(approveBtns[approveBtns.length - 1])
-    await screen.findByText('新报告')
+    await screen.findByText('新报告') // 追问 final 落地
 
     // 现在通过 staleOnEvent 推 final —— runId=1 已自增到 2 → stale 回调被拦
     staleOnEvent!('final', {
@@ -325,7 +328,8 @@ describe('ChatPanel', () => {
     await user.type(screen.getByPlaceholderText('输入研究方向…'), 'X{Enter}')
     await screen.findByText((c, e) => e?.tagName === 'DIV' && c.includes('p'))
     await user.click(screen.getByRole('button', { name: /批准并开始/ }))
-    await screen.findByText('报告')
+    // markdown 渲染拆节点 → 用 function 匹配
+    await screen.findByText((c, e) => !!e && c.includes('报告'))
     expect(vi.mocked(approvePlanStream)).toHaveBeenCalledWith(
       'sess-a',
       null,
@@ -438,5 +442,118 @@ describe('ChatPanel', () => {
     await user.click(screen.getByRole('button', { name: '研究模式' }))
     await user.type(screen.getByPlaceholderText('输入研究方向…'), 'X{Enter}')
     await screen.findByText(/planner 挂了/)
+  })
+
+  // === M5.5.6 · 多轮追问 ===
+
+  it('M5.5.6: approved plan 后再发方向 → 调 continueResearchStream 不调 startPlan，plan 卡片不重复', async () => {
+    // 走完第一轮：发 query → 批准 → 等 v1 final
+    vi.mocked(startPlan).mockResolvedValue({
+      session_id: 'sess-fu',
+      plan: {
+        title: 'p',
+        sub_questions: [{ question: 'q', rationale: 'r' }],
+        search_queries: [{ intent: 'i', queries: ['s'] }],
+        outline: [{ heading: 'h', bullets: ['b'] }],
+        estimated_papers: 5,
+        reasoning: '',
+      },
+      plan_status: 'pending',
+      plan_generated_at: '',
+    } as never)
+    vi.mocked(approvePlanStream).mockImplementation((_sid, _p, onEvent) => {
+      onEvent('final', {
+        session_id: 'sess-fu',
+        report_markdown: '# v1',
+        report_path: 'data/reports/sess-fu.md',
+        papers: [],
+      })
+      return () => {}
+    })
+    vi.mocked(continueResearchStream).mockImplementation((_sid, _q, onEvent) => {
+      onEvent('final', {
+        session_id: 'sess-fu',
+        report_markdown: '# v2',
+        report_path: 'data/reports/sess-fu.md',
+        papers: [],
+      })
+      return () => {}
+    })
+
+    const user = userEvent.setup()
+    renderPanel()
+    await user.click(screen.getByRole('button', { name: '研究模式' }))
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'LLM{Enter}')
+    // 等 plan card
+    await screen.findByText((c, e) => e?.tagName === 'DIV' && c.includes('p'))
+    await user.click(screen.getByRole('button', { name: /批准并开始/ }))
+    await screen.findByText((c, e) => !!e && c.includes('v1'))
+
+    // 第一次 startPlan 已调过 1 次
+    expect(vi.mocked(startPlan)).toHaveBeenCalledTimes(1)
+
+    // 等 plan card status 变 approved（hasApprovedPlan set true 后的可见副作用）
+    await screen.findAllByText(/已批准/)
+
+    // 第二轮：追问 → 调 continueResearchStream，不再调 startPlan
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), '追问{Enter}')
+    await screen.findByText((c, e) => !!e && c.includes('v2'))
+
+    expect(vi.mocked(continueResearchStream)).toHaveBeenCalledWith(
+      'sess-fu',
+      '追问',
+      expect.any(Function),
+    )
+    // startPlan 没被重复调（证明没再走 plan 流程）
+    expect(vi.mocked(startPlan)).toHaveBeenCalledTimes(1)
+    // plan 卡片只渲染一次（用 📋 emoji + 标题匹配，避开顶部栏的"研究计划等你审"提示）
+    expect(screen.getAllByText(/📋 研究计划/).length).toBe(1)
+  })
+
+  it('M5.5.6: followup final → 追加新 assistant 消息 + phase=idle（发送按钮可用）', async () => {
+    // 直接 mock：本地 setHasApprovedPlan(true) 难触发——走完完整 first round 模拟
+    vi.mocked(startPlan).mockResolvedValue({
+      session_id: 'sess-fu2',
+      plan: {
+        title: 'p',
+        sub_questions: [{ question: 'q', rationale: 'r' }],
+        search_queries: [{ intent: 'i', queries: ['s'] }],
+        outline: [{ heading: 'h', bullets: ['b'] }],
+        estimated_papers: 5,
+        reasoning: '',
+      },
+      plan_status: 'pending',
+      plan_generated_at: '',
+    } as never)
+    vi.mocked(approvePlanStream).mockImplementation((_sid, _p, onEvent) => {
+      onEvent('final', {
+        session_id: 'sess-fu2',
+        report_markdown: '# v1',
+        report_path: 'data/reports/sess-fu2.md',
+        papers: [],
+      })
+      return () => {}
+    })
+    vi.mocked(continueResearchStream).mockImplementation((_sid, _q, onEvent) => {
+      onEvent('final', {
+        session_id: 'sess-fu2',
+        report_markdown: '## v2 content',
+        report_path: 'data/reports/sess-fu2.md',
+        papers: [],
+      })
+      return () => {}
+    })
+    const user = userEvent.setup()
+    renderPanel()
+    await user.click(screen.getByRole('button', { name: '研究模式' }))
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'X{Enter}')
+    await screen.findByText((c, e) => e?.tagName === 'DIV' && c.includes('p'))
+    await user.click(screen.getByRole('button', { name: /批准并开始/ }))
+    await screen.findByText((c, e) => !!e && c.includes('v1'))
+    // 追问
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'Q{Enter}')
+    await screen.findByText((c, e) => !!e && c.includes('v2 content'))
+    // phase=idle → 输入框 enabled（按钮 disabled 是因 input 空，handleSubmit 后 setInput('')）
+    expect(screen.getByPlaceholderText('输入研究方向…')).not.toBeDisabled()
   })
 })
