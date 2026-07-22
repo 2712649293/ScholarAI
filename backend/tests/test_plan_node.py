@@ -182,3 +182,32 @@ def test_planner_node_resume_invalid_decision_treated_as_reject():
     with patch("app.agents.nodes.planner.interrupt", return_value="garbage"):
         result = asyncio.run(planner_node(state))
     assert result["plan_status"] == "rejected"
+
+
+def test_planner_node_resume_approve_injects_plan_as_aimessage():
+    """M5.5.8: approve 时把 plan 写进 messages（作为 AIMessage），让 researcher agent
+    在 history 里看到"用户已批准的研究计划"，结合 SYSTEM_PROMPT 硬约束避免偏题。
+    """
+    from langchain_core.messages import AIMessage
+
+    state = {
+        "query": "无人机自组网 MAC 层协议研究",
+        "session_id": "s1",
+        "plan": MOCK_PLAN.model_dump(),
+        "plan_status": "pending",
+    }
+    with patch(
+        "app.agents.nodes.planner.interrupt",
+        return_value={"action": "approve"},
+    ):
+        result = asyncio.run(planner_node(state))
+    # messages 字段必须有，且第一条是 AIMessage 含 plan 内容
+    assert "messages" in result
+    assert len(result["messages"]) == 1
+    msg = result["messages"][0]
+    assert isinstance(msg, AIMessage)
+    # 内容含 plan.title + plan 子问题关键词 + plan.search_queries 关键词
+    assert "LLM 推理综述" in msg.content
+    assert "无人机" not in msg.content  # 这个测试用 mock plan，不用关心具体方向
+    assert "用户已批准" in msg.content
+    assert "请严格按" in msg.content

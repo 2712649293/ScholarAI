@@ -14,9 +14,10 @@ planner_node 是纯 LLM 调用 + state 字段更新，无副作用，安全。
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import interrupt
 
 from app.agents.schemas import ResearchPlan
@@ -130,10 +131,24 @@ async def planner_node(state: ResearchState) -> dict:
             search_q.extend(g.get("queries", []))
         elif isinstance(g, list):
             search_q.extend(g)
+    # M5.5.8: 把 plan 内容作为 AIMessage 注入 messages 历史。
+    # 这样 researcher agent（create_agent）invoke 时看到 history 里有"用户已批准的
+    # 研究计划"，结合 SYSTEM_PROMPT 的硬约束，知道搜索/写综述必须按 plan 范围，
+    # 不会自己另起炉灶用无关 query（比如把"无人机 MAC"联想成"GNN"）。
+    plan_summary = json.dumps(plan, ensure_ascii=False, indent=2)
     return {
         "plan": plan,
         "plan_status": "approved",
         "plan_generated_at": state.get("plan_generated_at") or _now_iso(),
         "sub_questions": sub_q,
         "search_queries": search_q,
+        "messages": [
+            AIMessage(
+                content=(
+                    f"用户已批准以下研究计划：\n\n{plan_summary}\n\n"
+                    f"请严格按上述计划的 title / outline / search_queries 范围"
+                    f"进行搜索与综述撰写，不得偏离。"
+                )
+            )
+        ],
     }
