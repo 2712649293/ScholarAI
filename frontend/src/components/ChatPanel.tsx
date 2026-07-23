@@ -183,6 +183,12 @@ export function ChatPanel() {
             { role: 'assistant', content: f.report_markdown, markdown: true },
           ])
           setPhase('idle')
+          // M5.5.10: 追问失败原因提示
+          if (f.failure_reason === 'search_failed') {
+            setError('⚠️ 论文检索失败（arXiv 服务暂时不可达）。请稍后重试或编辑 plan 修改搜索词。')
+          } else if (f.failure_reason === 'download_failed') {
+            setError('⚠️ 论文 PDF 下载失败（arXiv 服务暂时不可达）。综述已基于摘要生成，过段时间可重试。')
+          }
         } else if (event === 'error') {
           setError((data as { message?: string }).message ?? '执行失败')
           setPhase('idle')
@@ -231,6 +237,12 @@ export function ChatPanel() {
           // M5.5.6: approve 完成后进入"可追问"状态
           setHasApprovedPlan(true)
           hasApprovedPlanRef.current = true
+          // M5.5.10: 失败原因提示
+          if (f.failure_reason === 'search_failed') {
+            setError('⚠️ 论文检索失败（arXiv 服务暂时不可达）。请稍后重试或编辑 plan 修改搜索词。')
+          } else if (f.failure_reason === 'download_failed') {
+            setError('⚠️ 论文 PDF 下载失败（arXiv 服务暂时不可达）。综述已基于摘要生成，过段时间可重试。')
+          }
         } else if (event === 'error') {
           // 回滚：plan 回到 pending 让用户能重新编辑/拒绝/批准
           setMessages((m) =>

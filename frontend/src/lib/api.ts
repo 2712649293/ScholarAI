@@ -213,6 +213,7 @@ export interface ResearchFinal {
   report_markdown: string
   report_path: string
   papers: ResearchPaper[]
+  failure_reason?: 'search_failed' | 'download_failed' | null  // M5.5.10
 }
 
 export interface ResearchBody {

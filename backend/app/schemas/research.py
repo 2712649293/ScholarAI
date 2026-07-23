@@ -27,3 +27,4 @@ class ResearchResponse(BaseModel):
     report_markdown: str
     report_path: str
     papers: list[PaperOut]
+    failure_reason: str | None = None  # M5.5.10: 'search_failed' | 'download_failed' | None

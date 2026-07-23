@@ -1,4 +1,11 @@
-"""Downloader 节点：并发下载论文 PDF（M4.1）。"""
+"""Downloader 节点：并发下载论文 PDF（M4.1 + M5.5.10：retry + jitter + 总超时调整）。
+
+M5.5.10 调整：
+- 单 PDF timeout 15s → 30s（容忍慢响应）
+- 总超时 180s → 240s（容纳 retry 间隔）
+- retry 仍 3 次，但加 multiplier=1 让指数退避更明显（1s/2s/4s/8s）
+- 并发 5 不变（PDF 是 fastly CDN 较稳，但 arxiv search 端串行——见 searcher.py）
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,18 +23,20 @@ from app.agents.state import ResearchState
 from app.config import settings
 
 MAX_CONCURRENT = 5
-DOWNLOAD_TOTAL_TIMEOUT = 180  # 全部下载总超时（秒）；到点未完成的算失败，防 httpx 卡死
+DOWNLOAD_TOTAL_TIMEOUT = 240  # 全部下载总超时（秒）；到点未完成的算失败，防 httpx 卡死
+PDF_TIMEOUT = 30.0  # M5.5.10: 单 PDF timeout 从 15s → 30s（容忍慢响应）
+PDF_MAX_RETRIES = 2  # 1 次 + 2 次重试 = 共 3 次尝试
 _RETRYABLE = (httpx.TransportError, httpx.HTTPStatusError)
 
 
 @retry(
-    stop=stop_after_attempt(3),  # 1 次 + 2 次重试
-    wait=wait_exponential(min=1, max=8),
+    stop=stop_after_attempt(PDF_MAX_RETRIES + 1),
+    wait=wait_exponential(multiplier=1, min=2, max=8),  # 2s/4s/8s
     retry=retry_if_exception_type(_RETRYABLE),
     reraise=True,
 )
 async def _fetch(client: httpx.AsyncClient, url: str) -> bytes:
-    r = await client.get(url, follow_redirects=True, timeout=15.0)
+    r = await client.get(url, follow_redirects=True, timeout=PDF_TIMEOUT)
     r.raise_for_status()
     return r.content
 

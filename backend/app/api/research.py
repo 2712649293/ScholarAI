@@ -76,19 +76,36 @@ def _save_report(session_id: str, report: str) -> str:
     return str(path)
 
 
-async def _finalize(session_id: str, agent, config: dict) -> tuple[str, str, list]:
-    """从 checkpointer 读最终 state → 落盘报告 + 写 messages（侧边栏用）。"""
+async def _finalize(
+    session_id: str, agent, config: dict
+) -> tuple[str, str, list, str | None]:
+    """从 checkpointer 读最终 state → 落盘报告 + 写 messages（侧边栏用）。
+
+    M5.5.10: 返回 failure_reason 让前端能渲染失败提示：
+    - 'search_failed'：state.papers 为空（arxiv 检索全部失败）
+    - 'download_failed'：papers 有但 download_failures 全空（即所有 PDF 都拉不下来）
+    - None：正常路径
+    """
     snap = await agent.aget_state(config)
     state = snap.values if snap else {}
     draft = state.get("draft") or NO_REPORT
     papers = state.get("papers", []) or []
+    download_failures = state.get("download_failures", []) or []
+
+    # 推断失败原因
+    failure_reason: str | None = None
+    if not papers:
+        failure_reason = "search_failed"
+    elif download_failures and not any(p.get("local_path") for p in papers):
+        failure_reason = "download_failed"
+
     report_path = _save_report(session_id, draft)
     # 写 messages 表（仅供侧边栏展示，不是 agent state 的一部分）
     query = state.get("query", "")
     if query:
         store.add_message(session_id, "user", query)
     store.add_message(session_id, "assistant", draft)
-    return draft, report_path, papers
+    return draft, report_path, papers, failure_reason
 
 
 @router.post("", response_model=ResearchResponse)
@@ -102,12 +119,13 @@ async def start_research(req: ResearchRequest) -> ResearchResponse:
     except GraphRecursionError:
         pass
 
-    draft, report_path, papers = await _finalize(session.id, agent, config)
+    draft, report_path, papers, failure_reason = await _finalize(session.id, agent, config)
     return ResearchResponse(
         session_id=session.id,
         report_markdown=draft,
         report_path=report_path,
         papers=[PaperOut(**p) for p in papers],
+        failure_reason=failure_reason,
     )
 
 
@@ -135,7 +153,7 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
             yield _sse("error", {"code": "internal_error", "message": str(e)})
             return
 
-        draft, report_path, papers = await _finalize(session.id, agent, config)
+        draft, report_path, papers, failure_reason = await _finalize(session.id, agent, config)
         yield _sse(
             "final",
             {
@@ -143,6 +161,7 @@ async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
                 "report_markdown": draft,
                 "report_path": report_path,
                 "papers": papers,
+                "failure_reason": failure_reason,  # M5.5.10
             },
         )
         # ponytail: 多发一个空 keep-alive 防 uvicorn/proxy 缓冲挂起
@@ -318,7 +337,7 @@ async def approve_plan(sid: str, req: ApproveRequest | None = None) -> Streaming
             return
 
         # 读最终 state（researcher 跑完 → plan_status 应为 approved）
-        draft, report_path, papers = await _finalize(sid, graph, config)
+        draft, report_path, papers, failure_reason = await _finalize(sid, graph, config)
         yield _sse(
             "final",
             {
@@ -326,6 +345,7 @@ async def approve_plan(sid: str, req: ApproveRequest | None = None) -> Streaming
                 "report_markdown": draft,
                 "report_path": report_path,
                 "papers": papers,
+                "failure_reason": failure_reason,  # M5.5.10
             },
         )
         yield ": done\n\n"
@@ -411,7 +431,7 @@ async def continue_research_stream(
             yield _sse("error", {"code": "internal_error", "message": str(e)})
             return
 
-        draft, report_path, papers = await _finalize(sid, agent, config)
+        draft, report_path, papers, failure_reason = await _finalize(sid, agent, config)
         yield _sse(
             "final",
             {
@@ -419,6 +439,7 @@ async def continue_research_stream(
                 "report_markdown": draft,
                 "report_path": report_path,
                 "papers": papers,
+                "failure_reason": failure_reason,  # M5.5.10
             },
         )
         yield ": done\n\n"

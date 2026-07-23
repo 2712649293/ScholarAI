@@ -116,25 +116,34 @@ def test_searcher_all_timeout_raises_fetch_failed():
 
 
 def test_searcher_query_timeout_real_wait():
-    """真实 wait_for 行为：单 query 超过 QUERY_TIMEOUT 立即抛 TimeoutError。"""
+    """真实 wait_for 行为：单 query 超过 QUERY_TIMEOUT 立即抛 TimeoutError。
+
+    M5.5.10 加了 tenacity retry（2s/4s/8s 退避）——所以即便设短超时也会触发多次重试，
+    总耗时含退避。设 wait_for 0.1s + 容忍 5s 阈值（3 次重试每次 0.1s + 退避 ~4-5s）。
+    """
     import time
 
     async def fast_main():
-        # 临时改 QUERY_TIMEOUT 为 0.3s 验证 wait_for 工作
-        original = searcher.QUERY_TIMEOUT
-        searcher.QUERY_TIMEOUT = 0.3
+        original_timeout = searcher.QUERY_TIMEOUT
+        searcher.QUERY_TIMEOUT = 0.1  # wait_for 短超时
         try:
             def sleep_search(q, per):
-                time.sleep(2)  # 模拟 SDK hang
+                time.sleep(3)  # 模拟 SDK hang
                 return []
             with patch.object(searcher, "_search_one", side_effect=sleep_search):
                 t0 = time.time()
                 with pytest.raises(asyncio.TimeoutError):
                     await searcher._search_with_timeout("q", 10)
                 elapsed = time.time() - t0
-                # 0.3s timeout 触发；不会等满 2s sleep
-                assert elapsed < 1.5, f"wait_for 没生效，elapsed={elapsed}"
+                # wait_for 0.1s 触发 + tenacity 3 次重试 + 退避（最坏 ~15s）
+                # 实际 retry 次数取决于 SEARCH_MAX_RETRIES，2 次 = 3 次尝试 + 2 次退避
+                # 总时长 < 15s（远小于 3s sleep × 3 次 = 9s）+ 退避 ~6s = ~15s
+                assert elapsed < 15, f"wait_for/retry 异常慢，elapsed={elapsed}"
+                # 但 elapsed 必须远小于"不超时"的 3s sleep × 3 = 9s（无 retry 时）
+                # 实际 elapsed 应接近 0.3s (3 × 0.1s wait_for) + 退避 ~2s = ~2-4s
+                # 放宽到 6s 容差
+                assert elapsed < 6, f"wait_for 没生效，elapsed={elapsed}"
         finally:
-            searcher.QUERY_TIMEOUT = original
+            searcher.QUERY_TIMEOUT = original_timeout
 
     asyncio.run(fast_main())
