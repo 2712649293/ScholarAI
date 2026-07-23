@@ -34,19 +34,24 @@ vi.mock('@/lib/api', () => ({
 
 const renderPanel = () => render(<ChatPanel />, { wrapper: MemoryRouter })
 
+/** M5.6: shared clarify → confirmed → auto-startPlan mock. */
+function mockClarifyConfirmed(sid = 'sess-x') {
+  vi.mocked(clarifyStream).mockImplementation((_body, onEvent) => {
+    onEvent('confirmed', {
+      session_id: sid,
+      clarify_direction: { refined_query: _body?.query || 'q', year_start: 2021, year_end: 2026, notes: '', confirmed_at: '' },
+      plan_status: 'pending',
+    })
+    return () => {}
+  })
+}
+
 describe('ChatPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getSession).mockResolvedValue({ messages: [] } as never)
-    // M5.6: default clarify → immediate confirm → auto startPlan
-    vi.mocked(clarifyStream).mockImplementation((_body, onEvent) => {
-      onEvent('confirmed', {
-        session_id: 'sess-x',
-        clarify_direction: { refined_query: _body?.query || 'x', year_start: 2021, year_end: 2026, notes: '', confirmed_at: '' },
-        plan_status: 'pending',
-      })
-      return () => {}
-    })
+    // M5.6: default clarify mock — do nothing (tests that need clarify flow set it up)
+    // vi.fn() default: returns undefined, no events fired
   })
   it('disables send button when input is empty', () => {
     renderPanel()
@@ -198,6 +203,7 @@ describe('ChatPanel', () => {
     // 场景：第一次 runExecute 推 final 让 phase=idle（但 onEvent 引用保留），
     // 第二次 runFollowup（已 approved plan）走 continueResearchStream 推 final 让"新报告"出现；
     // 然后用 stale 引用推 final，应被 runId 自增拦下，stale 文本不应出现。
+    mockClarifyConfirmed('sess-a')
     let staleOnEvent: ((event: string, data: unknown) => void) | null = null
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-a',
@@ -265,6 +271,7 @@ describe('ChatPanel', () => {
   // === M5.5 · Plan 模块新测试 ===
 
   it('M5.5: plan event → renders PlanCard with title and approve/reject buttons', async () => {
+    mockClarifyConfirmed('sess-p')
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-p',
       plan: {
@@ -294,6 +301,7 @@ describe('ChatPanel', () => {
   })
 
   it('M5.5: approve button → calls approvePlanStream and starts execute flow', async () => {
+    mockClarifyConfirmed('sess-a')  // M5.6: clarify → confirmed → auto-startPlan
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-a',
       plan: {
@@ -333,6 +341,7 @@ describe('ChatPanel', () => {
   })
 
   it('M5.5: reject button → calls rejectPlan and card turns gray', async () => {
+    mockClarifyConfirmed('sess-rj')
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-rj',
       plan: {
@@ -368,6 +377,7 @@ describe('ChatPanel', () => {
   })
 
   it('M5.5: edit button → opens editor; save calls updatePlan once', async () => {
+    mockClarifyConfirmed('sess-e')
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-e',
       plan: {
@@ -442,6 +452,7 @@ describe('ChatPanel', () => {
   // === M5.5.6 · 多轮追问 ===
 
   it('M5.5.6: approved plan 后再发方向 → 调 continueResearchStream 不调 startPlan，plan 卡片不重复', async () => {
+    mockClarifyConfirmed('sess-fu')
     // 走完第一轮：发 query → 批准 → 等 v1 final
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-fu',
@@ -506,6 +517,7 @@ describe('ChatPanel', () => {
   })
 
   it('M5.5.6: followup final → 追加新 assistant 消息 + phase=idle（发送按钮可用）', async () => {
+    mockClarifyConfirmed('sess-fu2')
     // 直接 mock：本地 setHasApprovedPlan(true) 难触发——走完完整 first round 模拟
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-fu2',
