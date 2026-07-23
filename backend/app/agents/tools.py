@@ -11,6 +11,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from app.agents.nodes import analyzer, downloader, searcher, synthesizer
+from app.errors import ArxivFetchFailed
 
 
 def make_tools() -> list:
@@ -24,13 +25,31 @@ def make_tools() -> list:
         """按英文关键词短语列表检索 arxiv 论文（queries 建议 3-5 个短语）。可多次调用累积去重。"""
         state = runtime.state
         new_queries = list(dict.fromkeys(state.get("search_queries", []) + queries))
-        out = await searcher.run(
-            {
-                "search_queries": queries,
-                "depth": state.get("depth", "normal"),
-                "max_papers": state.get("max_papers", 20),
-            }
-        )
+        try:
+            out = await searcher.run(
+                {
+                    "search_queries": queries,
+                    "depth": state.get("depth", "normal"),
+                    "max_papers": state.get("max_papers", 20),
+                }
+            )
+        except ArxivFetchFailed as e:
+            # M5.5.9: arxiv 全部失败/超时 → 翻译成 ToolMessage，agent 看到后
+            # 决定下一步（重试 / 改 query / 接受失败）。不再让异常冒泡中断 run。
+            return Command(
+                update={
+                    "messages": [
+                        _msg(
+                            runtime,
+                            (
+                                f"arxiv 检索失败（{len(queries)} 个 query 全部超时或不可用）。"
+                                f"建议：1) 等待几分钟后重试 2) 修改 search_queries（在 plan 卡片点编辑）"
+                                f" 3) 接受失败结束"
+                            ),
+                        )
+                    ]
+                }
+            )
         by_id = {p["arxiv_id"]: p for p in state.get("papers", [])}
         for p in out.get("papers", []):
             by_id.setdefault(p["arxiv_id"], p)
