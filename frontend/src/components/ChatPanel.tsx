@@ -115,8 +115,13 @@ export function ChatPanel() {
         setResearchSteps([])
         setError(null)
         setPhase('idle')
-        // ponytail：不在这里 reset hasApprovedPlan——只让切到"空 session"分支 reset。
-        // 中途 setSessionId 触发的 re-render 不应清掉 approved 状态（否则追问路径断）。
+        // M5.5.12: 页面刷新 / 切 session 回来后恢复 hasApprovedPlan。
+        // 研究模式 + 有 assistant 消息 → 视为已通过 plan（保守但安全；后端 /continue
+        // 还会校验 plan_status）。
+        if (s.mode === 'research' && s.messages.some((m) => m.role === 'assistant')) {
+          setHasApprovedPlan(true)
+          hasApprovedPlanRef.current = true
+        }
       })
       .catch(() => setMessages([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
