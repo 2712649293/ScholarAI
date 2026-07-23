@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response  # noqa: E402
 
 from app import __version__  # noqa: E402
 from app.agents import research_agent  # noqa: E402
-from app.api import chat, knowledge, research, sessions  # noqa: E402
+from app.api import chat, clarify, knowledge, research, sessions  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.errors import ScholarAIError  # noqa: E402
 from app.observability import metrics  # noqa: E402
@@ -98,6 +98,7 @@ async def unhandled_handler(request: Request, exc: Exception):
 app.include_router(chat.router)
 app.include_router(knowledge.router)
 app.include_router(sessions.router)
+app.include_router(clarify.router)
 app.include_router(research.router)
 
 

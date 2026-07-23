@@ -74,6 +74,16 @@ class ContinueRequest(BaseModel):
     query: str
 
 
+class ClarifyRequest(BaseModel):
+    """POST /api/research/clarify/stream 启动澄清对话（M5.6）。
+
+    仅需 query。session_id 可选，首次自动创建。
+    """
+
+    query: str
+    session_id: str | None = None
+
+
 # === API 响应 ===
 class PlanResponse(BaseModel):
     """plan 状态读取响应（GET / PATCH / reject / regenerate 共用）。"""

@@ -363,6 +363,74 @@ export function approvePlanStream(
   return () => ctrl.abort()
 }
 
+// === M5.6 · Clarify 阶段 ===
+
+export interface ClarifyConfirmed {
+  session_id: string
+  clarify_direction: { refined_query: string; year_start: number; year_end: number; notes: string; confirmed_at: string }
+  plan_status: 'pending'
+}
+
+/** 首次启动澄清对话。SSE 推 message/step/confirmed。 */
+export function clarifyStream(
+  body: { query: string; session_id?: string },
+  onEvent: (event: string, data: unknown) => void,
+): () => void {
+  const ctrl = new AbortController()
+  ;(async () => {
+    const res = await fetch('/api/research/clarify/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(body), signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
+    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = ''
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break
+      buf += decoder.decode(value, { stream: true }); let idx: number
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx); buf = buf.slice(idx + 2); let event = 'message'; let data = ''
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        if (data) onEvent(event, JSON.parse(data))
+      }
+    }
+  })().catch((err) => onEvent('error', { message: String(err) }))
+  return () => ctrl.abort()
+}
+
+/** 澄清阶段用户回复。SSE 协议同 clarifyStream。 */
+export function clarifyContinueStream(
+  sessionId: string, query: string,
+  onEvent: (event: string, data: unknown) => void,
+): () => void {
+  const pw = (p: string, b: unknown, e: typeof onEvent) => {
+    const c = new AbortController()
+    ;(async () => {
+      const r = await fetch(p, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify(b), signal: c.signal })
+      if (!r.ok || !r.body) throw new Error(`SSE ${r.status}`)
+      const rd = r.body.getReader(); const d = new TextDecoder(); let bf = ''
+      for (;;) {
+        const { value, done } = await rd.read(); if (done) break
+        bf += d.decode(value, { stream: true }); let ix: number
+        while ((ix = bf.indexOf('\n\n')) !== -1) {
+          const raw = bf.slice(0, ix); bf = bf.slice(ix + 2); let ev = 'message'; let dt = ''
+          for (const ln of raw.split('\n')) {
+            if (ln.startsWith('event:')) ev = ln.slice(6).trim()
+            else if (ln.startsWith('data:')) dt += ln.slice(5).trim()
+          }
+          if (dt) e(ev, JSON.parse(dt))
+        }
+      }
+    })().catch((err) => e('error', { message: String(err) }))
+    return () => c.abort()
+  }
+  return pw(`/api/research/${sessionId}/clarify/continue`, { query }, onEvent)
+}
+
 // M5.5.6 · 追问：已 approved plan 后续问问题时跳过 planner，直接进 researcher。
 // 协议与 approvePlanStream 完全一致（step + final + :done），body 改传 query。
 export function continueResearchStream(

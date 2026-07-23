@@ -23,6 +23,7 @@ from app.agents.plan_graph import build_plan_graph
 from app.agents.research_agent import RECURSION_LIMIT, build_agent
 from app.agents.schemas import (
     ApproveRequest,
+    ClarifyRequest,
     ContinueRequest,
     PlanEditRequest,
     PlanRequest,

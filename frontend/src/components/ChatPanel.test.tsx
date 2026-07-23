@@ -6,9 +6,10 @@ import { ChatPanel } from './ChatPanel'
 import {
   chatQA,
   getSession,
-  researchStream,
   startPlan,
   approvePlanStream,
+  clarifyStream,
+  clarifyContinueStream,
   continueResearchStream,
   rejectPlan,
   updatePlan,
@@ -18,7 +19,9 @@ vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
   listKBs: vi.fn().mockResolvedValue([]),
   getSession: vi.fn().mockResolvedValue({ messages: [] }),
-  researchStream: vi.fn(),
+  // M5.6 clarify 阶段
+  clarifyStream: vi.fn(),
+  clarifyContinueStream: vi.fn(),
   // M5.5 plan 模块
   startPlan: vi.fn(),
   approvePlanStream: vi.fn(),
@@ -33,9 +36,17 @@ const renderPanel = () => render(<ChatPanel />, { wrapper: MemoryRouter })
 
 describe('ChatPanel', () => {
   beforeEach(() => {
-    // M5.5.6: 各测试间清 mock 状态，避免调用次数跨测试累加
     vi.clearAllMocks()
     vi.mocked(getSession).mockResolvedValue({ messages: [] } as never)
+    // M5.6: default clarify → immediate confirm → auto startPlan
+    vi.mocked(clarifyStream).mockImplementation((_body, onEvent) => {
+      onEvent('confirmed', {
+        session_id: 'sess-x',
+        clarify_direction: { refined_query: _body?.query || 'x', year_start: 2021, year_end: 2026, notes: '', confirmed_at: '' },
+        plan_status: 'pending',
+      })
+      return () => {}
+    })
   })
   it('disables send button when input is empty', () => {
     renderPanel()
@@ -95,47 +106,43 @@ describe('ChatPanel', () => {
     expect(screen.getByText('[2] doc-def p.1')).toBeInTheDocument()
   })
 
-  it('research mode: generate plan → approve → streams steps then renders markdown report', async () => {
-    // M5.5: research 模式先 startPlan 拿 plan → 点批准 → approvePlanStream 走 SSE
+  it('research mode: clarify → confirmed → plan → approve → renders markdown report', async () => {
+    // M5.6: clarifyStream auto-confirms, triggers startPlan, then approve runs executor
+    vi.mocked(clarifyStream).mockImplementation((_body, onEvent) => {
+      // simulate agent asking a question then confirming
+      onEvent('message', { content: '确认研究方向：LLM推理。检索年限5年，需要调整吗？' })
+      onEvent('confirmed', {
+        session_id: 'sess-r',
+        clarify_direction: { refined_query: 'LLM 推理加速', year_start: 2021, year_end: 2026, notes: '', confirmed_at: '' },
+        plan_status: 'pending',
+      })
+      return () => {}
+    })
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-r',
       plan: {
-        title: 'LLM 推理综述',
-        sub_questions: [{ question: 'q1', rationale: 'r1' }],
+        title: 'LLM 推理综述', sub_questions: [{ question: 'q1', rationale: 'r1' }],
         search_queries: [{ intent: 'i1', queries: ['s1'] }],
-        outline: [{ heading: 'h1', bullets: ['b1'] }],
-        estimated_papers: 10,
-        reasoning: 'r',
+        outline: [{ heading: 'h1', bullets: ['b1'] }], estimated_papers: 10, reasoning: 'r',
       },
-      plan_status: 'pending',
-      plan_generated_at: '2026-07-21T00:00:00Z',
+      plan_status: 'pending', plan_generated_at: '2026-07-21T00:00:00Z',
     } as never)
     vi.mocked(approvePlanStream).mockImplementation((_sid, _plan, onEvent) => {
       onEvent('step', { node: 'search_arxiv' })
-      onEvent('final', {
-        session_id: 'sess-r',
-        report_markdown: '# 综述标题\n正文内容',
-        report_path: 'data/reports/sess-r.md',
-        papers: [],
-      })
+      onEvent('final', { session_id: 'sess-r', report_markdown: '# 综述标题\n正文内容', report_path: '', papers: [] })
       return () => {}
     })
     const user = userEvent.setup()
     renderPanel()
     await user.click(screen.getByRole('button', { name: '研究模式' }))
     await user.type(screen.getByPlaceholderText('输入研究方向…'), 'LLM 推理{Enter}')
-    // 等 plan 卡片出现（标题跨多节点，用 function 匹配）
-    await screen.findByText((content, element) => {
-      return element?.tagName === 'DIV' && content.includes('LLM 推理综述')
-    })
-    // 点批准（按钮文本含 emoji "✅ 批准并开始"）
+    // 等 clarify assistant 消息
+    await screen.findByText(/确认研究方向/)
+    // 等 plan card (clarify confirmed → startPlan → plan 入流)
+    await screen.findByText((c, e) => e?.tagName === 'DIV' && c.includes('LLM 推理综述'))
     await user.click(screen.getByRole('button', { name: /批准并开始/ }))
-    // 综述 markdown 落地
-    await waitFor(() => {
-      expect(screen.getByText('综述标题')).toBeInTheDocument()
-    })
+    await waitFor(() => { expect(screen.getByText('综述标题')).toBeInTheDocument() })
     expect(screen.getByRole('button', { name: '下载 .md' })).toBeInTheDocument()
-    expect(vi.mocked(approvePlanStream)).toHaveBeenCalled()
   })
 
   it('mode follows session.mode on load (qa case — regression for mode-residue bug)', async () => {
@@ -167,35 +174,23 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('button', { name: '问答模式' })).not.toBeDisabled()
   })
 
-  it('cross-session isolation: plan-stream / execute-stream abort when route sessionId changes', async () => {
-    // M_bug_sse_isolation 回归：路由切到新 session 时，in-flight 的 plan + execute SSE
-    // 都必须被 abort，否则旧闭包的 step/final 事件会污染新 session 的 state 并抢 URL。
-    // 用一个不会 resolve 的 mock 模拟"研究还在跑"，验证切换后 abort 被调用。
-    const planAbortSpy = vi.fn()
-    vi.mocked(startPlan).mockImplementation(async () => {
-      // 返回一个挂起的 promise 让 startPlan 一直在"planning"态
-      return new Promise(() => {}) as never
-    })
-    vi.mocked(approvePlanStream).mockImplementation(() => planAbortSpy)
+  it('cross-session isolation: clarify-stream abort when route sessionId changes', async () => {
+    // M5.6: clarify is first step. In-flight SSE must be aborted on route change.
+    const abortSpy = vi.fn()
+    vi.mocked(clarifyStream).mockImplementation(() => abortSpy)
 
     const { unmount } = render(
       <MemoryRouter initialEntries={['/chat/sess-b']}>
-        <Routes>
-          <Route path="/chat/:sessionId" element={<ChatPanel />} />
-        </Routes>
+        <Routes><Route path="/chat/:sessionId" element={<ChatPanel />} /></Routes>
       </MemoryRouter>,
     )
     await new Promise((r) => setTimeout(r, 0))
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: '研究模式' }))
-    const input = screen.getByPlaceholderText('输入研究方向…')
-    await user.type(input, 'LLM{Enter}')
-    expect(vi.mocked(startPlan)).toHaveBeenCalled()
-    // 卸载：routeSessionId 变化的 useEffect cleanup → abort + runId 自增，
-    // 任何 in-flight 的 SSE 回调都会因 runId 不匹配而丢弃事件。
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), 'LLM{Enter}')
+    expect(vi.mocked(clarifyStream)).toHaveBeenCalled()
     unmount()
-    // 注：startPlan 是一次性 fetch（无 abort），abort 走的是它内部 AbortController
-    // 与 useEffect cleanup 一致；这里主要验证 plan 流程没漏调 cleanup
+    expect(abortSpy).toHaveBeenCalled()
   })
 
   it('cross-session isolation: stale SSE events from prior execute run are dropped (token filter)', async () => {

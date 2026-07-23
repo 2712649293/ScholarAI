@@ -5,15 +5,17 @@ import remarkGfm from 'remark-gfm'
 import {
   approvePlanStream,
   chatQA,
+  clarifyStream,
+  clarifyContinueStream,
   continueResearchStream,
   getSession,
   listKBs,
-  researchStream,
   rejectPlan,
   startPlan,
   updatePlan,
   ApiError,
   type Citation,
+  type ClarifyConfirmed,
   type KB,
   type ResearchFinal,
   type ResearchPlan,
@@ -22,7 +24,7 @@ import { ResearchProgress, labelForTool } from '@/components/ResearchProgress'
 import { PlanCard } from '@/components/PlanCard'
 
 type Mode = 'qa' | 'research'
-type Phase = 'idle' | 'planning' | 'executing'
+type Phase = 'idle' | 'clarifying' | 'planning' | 'executing'
 
 interface BaseMsg {
   role: 'user' | 'assistant'
@@ -137,6 +139,63 @@ export function ChatPanel() {
   }
 
   const canSend = input.trim().length > 0 && phase === 'idle'
+
+  // M5.6: 是否在 clarify 对话中（haven't confirmed yet）
+  const clarifyActiveRef = useRef(false)
+
+  /** M5.6: 启动/继续澄清对话。先于 plan 流程。
+   * - first call: clarifyStream → SSE message/confirmed 事件
+   * - subsequent: clarifyContinueStream → SSE message/confirmed 事件
+   * - confirmed: auto call startPlan → plan 卡片入流
+   */
+  function runClarify(query: string, isContinue = false) {
+    if (!sessionId && isContinue) return
+    setPhase('clarifying')
+    setError(null)
+    clarifyActiveRef.current = true
+    const body = isContinue ? null : { query, session_id: sessionId }
+    const sseFn = isContinue
+      ? (on: (e: string, d: unknown) => void) => clarifyContinueStream(sessionId!, query, on)
+      : (on: (e: string, d: unknown) => void) => clarifyStream(body!, on)
+
+    const runId = ++sseRunIdRef.current
+    sseAbortRef.current?.()
+    sseAbortRef.current = sseFn((event, data) => {
+      if (runId !== sseRunIdRef.current) return
+      if (event === 'message') {
+        const { content } = data as { content: string }
+        setMessages((m) => [...m, { role: 'assistant', content }])
+        setPhase('idle')
+        if (!sessionId && !isContinue) {
+          // first clarify: navigate to new session URL (sessionId set by backend)
+          // sessionId will be set when confirmed event arrives
+        }
+      } else if (event === 'step') {
+        // agent called web_search — no visible change needed
+      } else if (event === 'confirmed') {
+        const cf = data as ClarifyConfirmed
+        setSessionId(cf.session_id)
+        clarifyActiveRef.current = false
+        // auto-trigger plan generation
+        startPlan({ query: cf.clarify_direction.refined_query, session_id: cf.session_id })
+          .then((resp) => {
+            setMessages((m) => [
+              ...m,
+              { role: 'plan', plan: resp.plan!, status: resp.plan_status as PlanMsg['status'] },
+            ])
+            if (!routeSessionId) navigate(`/chat/${resp.session_id}`)
+            setPhase('idle')
+          })
+          .catch((err) => {
+            setError(err instanceof ApiError ? err.message : String(err))
+            setPhase('idle')
+          })
+      } else if (event === 'error') {
+        setError((data as { message?: string }).message ?? '澄清失败')
+        setPhase('idle')
+      }
+    })
+  }
 
   /** M5.5: 启动 plan 流程。
    *  - 调 POST /api/research/plan（一次性 fetch，< 5s）
@@ -315,8 +374,12 @@ export function ChatPanel() {
     if (mode === 'research') {
       if (hasApprovedPlanRef.current) {
         runFollowup(query)
+      } else if (clarifyActiveRef.current) {
+        // M5.6: 已在澄清对话中 → 继续
+        runClarify(query, true)
       } else {
-        runPlan(query)
+        // M5.6: 首次研究方向 → 先澄清意图再生成 plan
+        runClarify(query)
       }
       return
     }

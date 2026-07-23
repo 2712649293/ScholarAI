@@ -37,5 +37,9 @@ class ResearchState(TypedDict, total=False):
 
     # === Plan 模块（M5.5：用户可审可改的预执行计划）===
     plan: dict | None  # ResearchPlan.model_dump()
-    plan_status: str  # "pending" | "edited" | "approved" | "rejected"
+    plan_status: str  # "pending" | "edited" | "approved" | "rejected" | "clarifying"（M5.6）
     plan_generated_at: str | None  # ISO timestamp（plan 首次生成时间）
+
+    # === M5.6：澄清阶段 ===
+    clarify_direction: dict | None  # confirm_direction 工具保存的确认信息
+    # {refined_query, year_start, year_end, notes, confirmed_at}
