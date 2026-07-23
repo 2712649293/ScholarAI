@@ -414,9 +414,10 @@ async def continue_research_stream(
     agent = build_agent()
     new_human = HumanMessage(content=req.query)
 
-    # M5.5.11: 快照 agent 跑前的 draft —— 若 agent 没调 write_review（纯问答追问），
-    # draft 不变，以 agent 最后一条 AIMessage 作为报告（而非重推旧草稿）。
+    # M5.5.11: 快照 agent 跑前的 draft + message count —— 若 agent 没调 write_review
+    # （纯问答追问），draft 不变，以 agent 新增的最后一条 AIMessage 作为报告。
     draft_before = snap.values.get("draft") if snap else None
+    msg_count_before = len(snap.values.get("messages", [])) if snap else 0
 
     async def gen():
         try:
@@ -437,13 +438,16 @@ async def continue_research_stream(
 
         draft, report_path, papers, failure_reason = await _finalize(sid, agent, config)
 
-        # M5.5.11: draft 没变 → 纯问答 → 用 agent 最新回复而非旧草稿
-        if not draft_before or draft == draft_before:
-            # 取最后一条 AIMessage 内容作为回复
+        # M5.5.11: draft 没变 → 纯问答 → 用 agent 新增的最后一条 AIMessage 作为
+        # 报告内容（不重推旧草稿）。
+        if draft_before and draft == draft_before:
             msg_snap = await agent.aget_state(config)
+            all_msgs = msg_snap.values.get("messages", []) if msg_snap else []
+            new_msgs = all_msgs[msg_count_before:]  # 只看 astream 新增的
+            # 逆序找最后一条 AIMessage（不含 tool_calls —— agent 的最终回复）
             last_ai = None
-            for m in reversed(msg_snap.values.get("messages", []) if msg_snap else []):
-                if hasattr(m, "content") and not getattr(m, "tool_calls", None):
+            for m in reversed(new_msgs):
+                if type(m).__name__ == "AIMessage" and not m.tool_calls:
                     last_ai = m.content
                     break
             if last_ai and last_ai != draft:
