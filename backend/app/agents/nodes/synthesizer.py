@@ -10,6 +10,8 @@ SYSTEM = (
     "你是学术综述撰写助手。基于给定论文的结构化分析（或摘要），用中文写一篇结构化综述，"
     "包含章节：引言、研究现状、方法分类、趋势、未来方向。"
     "每条关键结论用 [arxiv_id] 标注来源。只依据给定内容，不要编造。"
+    "如果提供了论文下载状态列表，在综述末尾按'参考文献'格式列出每篇论文的 arxiv_id、"
+    "标题及下载状态（✅ 已下载 / ❌ 下载失败需自行查阅）。"
 )
 
 
@@ -43,9 +45,18 @@ async def run(state: ResearchState) -> dict:
         + "\n".join(f"- {q}" for q in state.get("sub_questions", []))
         + f"\n\n论文资料（共 {len(papers)} 篇）：\n{context}"
     )
+    # M5.5.11: 传下载成功/失败论文列表，让 LLM 在综述末尾列出
     failures = state.get("download_failures", [])
+    downloaded = [p for p in papers if p.get("local_path")]
     if failures:
-        user += f"\n\n注意：有 {len(failures)} 篇论文下载失败，请在综述末尾注明。"
+        user += (
+            f"\n\n**论文下载状态**：\n"
+            f"✅ 成功下载 {len(downloaded)} 篇：\n"
+            + "\n".join(f"- [{p['arxiv_id']}] {p['title']}" for p in downloaded)
+            + f"\n\n❌ 下载失败 {len(failures)} 篇（PDF 不可达，需自行查阅）：\n"
+            + "\n".join(f"- [{aid}]（需自行查阅）" for aid in failures)
+            + "\n\n请在综述末尾按'参考文献'格式列出每篇论文的 arxiv_id、标题及下载状态（✅/❌）。"
+        )
     feedback = state.get("feedback", "")
     existing_draft = (state.get("draft") or "").strip()
     if feedback and existing_draft:

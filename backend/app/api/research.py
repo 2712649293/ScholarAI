@@ -414,6 +414,10 @@ async def continue_research_stream(
     agent = build_agent()
     new_human = HumanMessage(content=req.query)
 
+    # M5.5.11: 快照 agent 跑前的 draft —— 若 agent 没调 write_review（纯问答追问），
+    # draft 不变，以 agent 最后一条 AIMessage 作为报告（而非重推旧草稿）。
+    draft_before = snap.values.get("draft") if snap else None
+
     async def gen():
         try:
             async for chunk in agent.astream(
@@ -432,6 +436,30 @@ async def continue_research_stream(
             return
 
         draft, report_path, papers, failure_reason = await _finalize(sid, agent, config)
+
+        # M5.5.11: draft 没变 → 纯问答 → 用 agent 最新回复而非旧草稿
+        if not draft_before or draft == draft_before:
+            # 取最后一条 AIMessage 内容作为回复
+            msg_snap = await agent.aget_state(config)
+            last_ai = None
+            for m in reversed(msg_snap.values.get("messages", []) if msg_snap else []):
+                if hasattr(m, "content") and not getattr(m, "tool_calls", None):
+                    last_ai = m.content
+                    break
+            if last_ai and last_ai != draft:
+                yield _sse(
+                    "final",
+                    {
+                        "session_id": sid,
+                        "report_markdown": last_ai,
+                        "report_path": report_path,
+                        "papers": papers,
+                        "failure_reason": failure_reason,
+                    },
+                )
+                yield ": done\n\n"
+                return
+
         yield _sse(
             "final",
             {
@@ -439,7 +467,7 @@ async def continue_research_stream(
                 "report_markdown": draft,
                 "report_path": report_path,
                 "papers": papers,
-                "failure_reason": failure_reason,  # M5.5.10
+                "failure_reason": failure_reason,
             },
         )
         yield ": done\n\n"

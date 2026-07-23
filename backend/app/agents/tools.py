@@ -137,8 +137,29 @@ def make_tools() -> list:
             )
         # 用 instructions 作为本次 feedback；不修改 state.feedback（避免污染 review_report）
         result = await synthesizer.run({**state, "feedback": instructions})
+        draft_text = result.get("draft", "")
+        iteration = result.get("iteration", 0)
         action = "改写" if instructions else "生成"
-        body = f"综述已{action}（{len(result.get('draft', ''))} 字，第 {result.get('iteration', 0)} 版）"
+
+        # M5.5.11: 附论文下载列表 + draft 首段 —— agent 追问时能搜到具体论文名
+        papers = state.get("papers", [])
+        downloaded = [p for p in papers if p.get("local_path")]
+        failed = [p for p in papers if not p.get("local_path")]
+        papers_info = (
+            f"\n✅ 已下载（{len(downloaded)} 篇）：\n"
+            + "\n".join(f"- [{p['arxiv_id']}] {p['title']}" for p in downloaded)
+        ) if downloaded else ""
+        if failed:
+            papers_info += (
+                f"\n\n❌ 未下载（{len(failed)} 篇，需自行查阅）：\n"
+                + "\n".join(f"- [{p['arxiv_id']}] {p['title']}" for p in failed)
+            )
+        preview = draft_text[:500] + ("..." if len(draft_text) > 500 else "")
+        body = (
+            f"综述已{action}（{len(draft_text)} 字，第 {iteration} 版）。\n\n"
+            f"{papers_info}\n\n"
+            f"【综述正文前段】\n{preview}"
+        )
         return Command(
             update={
                 **result,  # draft + iteration

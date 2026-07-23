@@ -73,29 +73,34 @@ async def run(state: ResearchState) -> ResearchState:
     dest_dir.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     async with httpx.AsyncClient() as client:
-        # 兜底：gather 等所有并发完成，单条卡死会一直挂。加总超时，到点取已下完的
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(
-                    *(_download_one(client, sem, p, dest_dir) for p in papers),
-                    return_exceptions=True,
-                ),
-                timeout=DOWNLOAD_TOTAL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            # 全部标记失败（gather 在超时后行为不可靠；保守起见用 None，后续判定失败）
-            results = [None] * len(papers)  # type: ignore[list-item]
+        # M5.5.11: asyncio.wait 替代 wait_for —— 超时时保留 done 任务的结果，
+        # 不丢弃已成功写入磁盘的 PDF（实测 gather 被 timeout kill 后全部丢弃）。
+        tasks = {
+            asyncio.ensure_future(_download_one(client, sem, p, dest_dir)): p
+            for p in papers
+        }
+        done, pending = await asyncio.wait(tasks, timeout=DOWNLOAD_TOTAL_TIMEOUT)
+
+        # 取消未完成的任务（CancelledError 不进入 except Exception，semaphore
+        # __aexit__ 自动释放）
+        for t in pending:
+            t.cancel()
 
     updated: list[dict] = []
     failures: list[str] = []
-    for paper, r in zip(papers, results):
-        if r is None or isinstance(r, BaseException):
-            # 超时/异常：保留原 paper（synthesizer 会退回 abstract），仅记失败
+    for task, paper in tasks.items():
+        if task in done:
+            try:
+                updated_paper, ok = task.result()
+                updated.append(updated_paper)
+                if not ok:
+                    failures.append(updated_paper["arxiv_id"])
+            except Exception:
+                # 极小概率：任务 done 但 result() 抛异常
+                updated.append(paper)
+                failures.append(paper["arxiv_id"])
+        else:
+            # 超时未完成 → 保留原 paper（synthesizer 退 abstract）
             updated.append(paper)
             failures.append(paper["arxiv_id"])
-            continue
-        updated_paper, ok = r
-        updated.append(updated_paper)
-        if not ok:
-            failures.append(updated_paper["arxiv_id"])
     return {"papers": updated, "download_failures": failures}
