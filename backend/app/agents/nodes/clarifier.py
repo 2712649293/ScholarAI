@@ -77,10 +77,10 @@ def make_clarify_tools() -> list:
     @tool
     async def confirm_direction(
         refined_query: str,
+        runtime: ToolRuntime,
         year_start: int = 2021,
         year_end: int | None = None,
         notes: str = "",
-        runtime: ToolRuntime,
     ) -> Command:
         """确认研究方向。调用后 plan 将被生成。
 
