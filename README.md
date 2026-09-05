@@ -7,7 +7,7 @@
 - **研究模式**：ReAct 主 agent 调度 5 个子 agent（检索 / 下载 / 解析 / 综述 / 审校）
 - **知识库管理**：上传 PDF 自动索引，支持引用
 - **可观测性**：LangSmith trace、Prometheus 指标、结构化日志（structlog）
-- **双部署**：本地 docker-compose + 云端托管
+- **部署**：docker-compose 一键启动，镜像自包含 BGE embedding 模型
 
 ## 快速开始
 
@@ -22,9 +22,7 @@ make up-be           # 后端 → http://localhost:8000
 make up-fe           # 前端 → http://localhost:5173
 ```
 
-### 方式二：Docker（可选，⏸ 验证推迟）
-Dockerfile / docker-compose.yml 已就位（`backend/Dockerfile`、`frontend/Dockerfile`、`deploy/docker-compose.yml`、`make docker-build/up/down/logs`）。
-**当前未做端到端 docker 验证**（本地无 docker 环境），见 [DEVELOPMENT_PLAN.md §12.12](./DEVELOPMENT_PLAN.md)。有 docker 环境时：
+### 方式二：Docker
 ```bash
 make docker-build    # 首次 3-10 分钟（BGE 模型下载 + wheels）
 make docker-up       # 启 → http://localhost:5173
@@ -32,7 +30,6 @@ make docker-logs
 make docker-down
 ```
 > Docker 镜像**自包含 BGE embedding 模型**（build 阶段预下载），无需运行时联网。
-> 单 worker 部署（嵌入式 Chroma 限制）；多 worker 扩展见 [DEVELOPMENT_PLAN.md §12.10](./DEVELOPMENT_PLAN.md)。
 
 ## 技术栈
 - **前端**：React 19 + TypeScript + Vite + Tailwind + shadcn/ui
@@ -49,11 +46,6 @@ make docker-down
 - `GET /health/ready` — DB + Chroma + 磁盘可写（readinessProbe，503 若失败）
 - `GET /metrics` — Prometheus 抓取
 
-## 文档
-- [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — 架构设计
-- [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md) — 分阶段开发计划
-- [deploy/README.md](./deploy/README.md) — 云端部署选项（Fargate / Cloud Run / SAE）
-
 ## 路线图
 - [x] M1 骨架
 - [x] M2 知识库 + RAG
@@ -61,11 +53,7 @@ make docker-down
 - [x] M4 研究模式 v2（论文级综述）
 - [x] M4.5 ReAct 主 agent 重构
 - [x] M5 可观测性
-- [x] M6 部署（配置文件完整；docker 验证 ⏸ 推迟；云端文档 v1.0 之前）
-
-## 下一阶段
-- v0.2 优先：研究模式**聊天追问（跨轮记忆）**——见 DEVELOPMENT_PLAN §12.11
-- v1.0 之前：docker 端到端冒烟验证（§12.12）+ 云端三选一部署文档（Fargate / Cloud Run / 阿里云 SAE）
+- [x] M6 部署
 
 ## License
 TBD

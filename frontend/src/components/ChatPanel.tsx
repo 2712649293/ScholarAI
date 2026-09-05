@@ -98,10 +98,12 @@ export function ChatPanel() {
       setPhase('idle')
       setHasApprovedPlan(false)
       hasApprovedPlanRef.current = false
+      clarifyActiveRef.current = false
       return
     }
     if (routeSessionId === sessionId) return
     setSessionId(routeSessionId)
+    clarifyActiveRef.current = false
     getSession(routeSessionId)
       .then((s) => {
         setMode(s.mode as Mode)
@@ -162,14 +164,14 @@ export function ChatPanel() {
     sseAbortRef.current?.()
     sseAbortRef.current = sseFn((event, data) => {
       if (runId !== sseRunIdRef.current) return
-      if (event === 'message') {
+      if (event === 'session') {
+        // 只记 sessionId，不 navigate——navigate 会触发 useEffect cleanup
+        // 把正在跑的 SSE 流 abort 掉，导致后续 message 事件收不到。
+        setSessionId((data as { session_id: string }).session_id)
+      } else if (event === 'message') {
         const { content } = data as { content: string }
         setMessages((m) => [...m, { role: 'assistant', content }])
         setPhase('idle')
-        if (!sessionId && !isContinue) {
-          // first clarify: navigate to new session URL (sessionId set by backend)
-          // sessionId will be set when confirmed event arrives
-        }
       } else if (event === 'step') {
         // agent called web_search — no visible change needed
       } else if (event === 'confirmed') {

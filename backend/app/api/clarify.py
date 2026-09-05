@@ -47,12 +47,21 @@ async def clarify_stream(req: ClarifyRequest) -> StreamingResponse:
     initial = {"query": req.query, "session_id": session.id, "depth": "normal"}
 
     async def gen():
+        # M5.6-fix: 先推 session_id，否则前端在 confirmed 前拿不到 id，
+        # 导致多轮澄清追问时 sessionId=undefined → runClarify isContinue 直接 return。
+        yield _sse("session", {"session_id": session.id})
+        # M5.6-fix: create_agent 在 stream_mode="updates" 下输出累积 messages，
+        # 不做过滤会把历史回复全部重发给前端。快照起点后只 yield 新消息。
+        snap_before = await graph.aget_state(config)
+        msg_count_before = len(snap_before.values.get("messages", [])) if snap_before and snap_before.values else 0
         try:
             async for chunk in graph.astream(initial, config=config, stream_mode="updates"):
                 if "__interrupt__" in (chunk or {}):
                     continue
                 for update in (chunk or {}).values():
-                    for m in (update or {}).get("messages", []):
+                    all_msgs = (update or {}).get("messages", [])
+                    new_msgs = all_msgs[msg_count_before:]
+                    for m in new_msgs:
                         for tc in getattr(m, "tool_calls", None) or []:
                             yield _sse("step", {"node": tc["name"]})
                         if type(m).__name__ == "AIMessage" and m.content and not m.tool_calls:
@@ -87,6 +96,9 @@ async def clarify_continue(sid: str, req: ContinueRequest) -> StreamingResponse:
     new_human = HumanMessage(content=req.query)
 
     async def gen():
+        # 快照当前消息数，只 yield 本轮新增的消息（防历史重发）
+        csnap = await graph.aget_state(config)
+        cmsg_before = len(csnap.values.get("messages", [])) if csnap and csnap.values else 0
         try:
             async for chunk in graph.astream(
                 {"messages": [new_human]},
@@ -96,7 +108,9 @@ async def clarify_continue(sid: str, req: ContinueRequest) -> StreamingResponse:
                 if "__interrupt__" in (chunk or {}):
                     continue
                 for update in (chunk or {}).values():
-                    for m in (update or {}).get("messages", []):
+                    all_msgs = (update or {}).get("messages", [])
+                    new_msgs = all_msgs[cmsg_before:]
+                    for m in new_msgs:
                         for tc in getattr(m, "tool_calls", None) or []:
                             yield _sse("step", {"node": tc["name"]})
                         if type(m).__name__ == "AIMessage" and m.content and not m.tool_calls:

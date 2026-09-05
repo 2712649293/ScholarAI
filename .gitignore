@@ -28,6 +28,7 @@ node_modules/
 # Data (papers, uploads, chroma, sqlite)
 data/
 backend/data/
+backend/hf-cache/
 uploads/
 
 # IDE

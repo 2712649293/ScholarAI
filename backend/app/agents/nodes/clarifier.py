@@ -94,6 +94,8 @@ def make_clarify_tools() -> list:
             year_end = datetime.now(timezone.utc).year
         return Command(
             update={
+                # LangGraph require: LLM call tool → must have matching ToolMessage
+                "messages": [_msg(runtime, "研究方向已确认，即将生成研究计划。")],
                 "clarify_direction": {
                     "refined_query": refined_query,
                     "year_start": year_start,

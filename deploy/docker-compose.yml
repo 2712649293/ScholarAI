@@ -32,7 +32,7 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8000/health/live"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health/live', timeout=3)"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -42,13 +42,12 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
-      args:
-        - VITE_API_BASE=/api    # nginx 反代，不需要直接指后端
     image: scholarai-frontend:latest
     container_name: scholarai-frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy   # 等后端就绪再起，避免 nginx 启动时解析不到 backend 主机名
     ports:
       - "5173:80"
     healthcheck:
