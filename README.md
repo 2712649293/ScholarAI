@@ -17,6 +17,8 @@ make init-env        # 从 apikey.txt 读 key 写 backend/.env
 make install-be      # 装 Python 依赖
 make install-fe      # 装 Node 依赖
 
+# 首次启动会自动执行数据库迁移
+
 # 两个终端：
 make up-be           # 后端 → http://localhost:8000
 make up-fe           # 前端 → http://localhost:5173
@@ -40,6 +42,27 @@ make docker-down
 - **PDF 解析**：pdfplumber
 - **数据库**：SQLite（dev）/ PostgreSQL（生产可切）
 - **可观测性**：structlog + Prometheus + LangSmith
+
+### 配置远程 embedding 服务
+
+项目支持任何 OpenAI-compatible 的 `/v1/embeddings` 接口。编辑
+`backend/.env`：
+
+```env
+EMBEDDING_PROVIDER=remote       # openai、qwen、remote 均可
+EMBEDDING_API_KEY=your-key
+EMBEDDING_BASE_URL=https://your-embedding-host/v1
+EMBEDDING_MODEL=your-embedding-model
+```
+
+如果配置了远程 embedding 的 `EMBEDDING_BASE_URL`，必须同时设置
+`EMBEDDING_PROVIDER=remote`（或 `openai` / `qwen`）；否则系统会按默认值使用本地 BGE。
+
+`EMBEDDING_BASE_URL` 填到 `/v1`，不要填写完整的 `/v1/embeddings`。
+`OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_EMBEDDING_MODEL` 也可作为兼容别名；Qwen DashScope 还支持 `DASHSCOPE_API_KEY`。
+切换 embedding 模型后，服务下次启动会自动删除使用旧模型的知识库、向量和关联上传文件，请重新上传文档建立索引；相关提示也写在 `.env.example` 中。
+
+如果直接运行 `uv run uvicorn`，先在 `backend` 目录执行 `uv run alembic upgrade head`。
 
 ## 健康检查
 - `GET /health/live` — 进程存活（livenessProbe）

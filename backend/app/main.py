@@ -24,11 +24,21 @@ from app.errors import ScholarAIError  # noqa: E402
 from app.observability import metrics  # noqa: E402
 from app.observability.logging import configure_logging, logger  # noqa: E402
 from app.observability.tracing import setup_tracing  # noqa: E402
+from app.rag.cleanup import cleanup_stale_knowledge_bases  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """M4.5.1: 启动时初始化 langgraph checkpointer（async），退出时关闭。"""
+    removed = cleanup_stale_knowledge_bases()
+    if removed:
+        logger.warning(
+            "rag.stale_knowledge_bases_removed",
+            count=removed,
+            embedding_model=settings.embedding_model
+            if settings.embedding_provider.strip().lower() != "bge"
+            else settings.bge_model,
+        )
     await research_agent.init_saver()
     try:
         yield
@@ -128,12 +138,18 @@ def health_ready() -> Response:
     ok = True
     # DB
     try:
-        from sqlalchemy import text
+        from sqlalchemy import inspect, text
         from app.db.session import engine
 
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        checks["db"] = "ok"
+        required_tables = {"sessions", "messages", "knowledge_bases", "documents"}
+        missing_tables = required_tables - set(inspect(engine).get_table_names())
+        if missing_tables:
+            checks["db"] = f"fail: missing tables {', '.join(sorted(missing_tables))}"
+            ok = False
+        else:
+            checks["db"] = "ok"
     except Exception as e:  # noqa: BLE001
         checks["db"] = f"fail: {e!s}"[:120]
         ok = False
@@ -169,4 +185,3 @@ def health_ready() -> Response:
 @app.get("/")
 def root() -> dict[str, str]:
     return {"name": "ScholarAI", "docs": "/docs", "version": __version__}
-

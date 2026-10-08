@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.models import Document, KnowledgeBase
 from app.db.session import get_db
 from app.rag import indexer, vector_store as vs
+from app.rag.embeddings import embedding_model_name
 from app.schemas.knowledge import (
     DocResponse,
     KBCreate,
@@ -81,7 +82,7 @@ def create_kb(req: KBCreate, db: Session = Depends(get_db)) -> KnowledgeBase:
     existing = db.scalar(select(KnowledgeBase).where(KnowledgeBase.name == req.name))
     if existing is not None:
         raise HTTPException(status_code=409, detail={"code": "kb_exists", "message": f"KB '{req.name}' 已存在"})
-    kb = KnowledgeBase(name=req.name, embedding_model=settings.bge_model)
+    kb = KnowledgeBase(name=req.name, embedding_model=embedding_model_name())
     db.add(kb)
     db.commit()
     db.refresh(kb)

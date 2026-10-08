@@ -1,4 +1,4 @@
-.PHONY: init-env up-be up-fe test-be test-fe type-be install-be install-fe clean docker-up docker-down docker-logs docker-build
+.PHONY: init-env db-upgrade up-be up-fe test-be test-fe type-be install-be install-fe clean docker-up docker-down docker-logs docker-build
 
 # 从 apikey.txt 生成 backend/.env（只读不写 apikey 内容到任何 git 跟踪文件）
 init-env:
@@ -19,8 +19,11 @@ install-be:
 install-fe:
 	cd frontend && npm install
 
+db-upgrade:
+	cd backend && uv run alembic upgrade head
+
 up-be:
-	cd backend && uv run uvicorn app.main:app --reload --port 8000
+	cd backend && uv run alembic upgrade head && uv run uvicorn app.main:app --reload --port 8000
 
 up-fe:
 	cd frontend && npm run dev

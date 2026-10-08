@@ -1,6 +1,7 @@
 """应用配置：所有 env 变量集中管理。"""
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,22 @@ class Settings(BaseSettings):
 
     # Embedding
     embedding_provider: str = "bge"
+    # openai/qwen/remote 均使用 OpenAI-compatible /v1/embeddings 接口。
+    # 保留 OPENAI_* 别名，兼容已有配置文件。
+    embedding_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "EMBEDDING_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY"
+        ),
+    )
+    embedding_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("EMBEDDING_BASE_URL", "OPENAI_BASE_URL"),
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        validation_alias=AliasChoices("EMBEDDING_MODEL", "OPENAI_EMBEDDING_MODEL"),
+    )
     bge_model: str = "BAAI/bge-small-zh-v1.5"
     bge_device: str = "cpu"
 
