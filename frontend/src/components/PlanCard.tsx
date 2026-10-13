@@ -231,6 +231,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function StatusBadge({ status }: { status: PlanStatus }) {
   const map: Record<PlanStatus, { text: string; cls: string }> = {
     none: { text: '—', cls: 'text-zinc-400' },
+    clarifying: { text: '澄清中', cls: 'text-zinc-500' },
     pending: { text: '待审', cls: 'text-amber-600 bg-amber-50' },
     edited: { text: '已编辑', cls: 'text-blue-600 bg-blue-50' },
     approved: { text: '✓ 已批准', cls: 'text-green-600 bg-green-50' },

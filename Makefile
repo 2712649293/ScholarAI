@@ -34,11 +34,11 @@ test-be:
 test-fe:
 	cd frontend && npm test
 
-# mypy 防 async def 漏 return → FastAPI 序列化为 null JSON（m5.5 教训）
+# 后端静态类型检查（配置见 backend/pyproject.toml）。
 type-be:
 	cd backend && uv run mypy app
 
-# === Docker（M6.2 compose）===
+# === Docker Compose（运行说明见 deploy/README.md）===
 
 docker-build:
 	cd deploy && docker compose build

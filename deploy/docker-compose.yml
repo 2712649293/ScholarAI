@@ -5,10 +5,10 @@
 #   make docker-down  # 停
 #   make docker-logs  # 看日志
 #
-# ponytail: 关键设计
-# - 单 worker（嵌入式 Chroma 多进程写同一目录会冲突，扩到多 worker 见 §12.10）
+# 运行与存储约束见 deploy/README.md。
+# - 单 worker（嵌入式 Chroma 与 SQLite 检查点）
 # - 不起独立 chroma 容器（嵌入式 PersistentClient 走 ./data/chroma/）
-# - ./data 挂到容器内，Chroma/PDF/reports/sessions SQLite 全部持久化
+# - 仓库根目录 data/ 挂到容器内，持久化向量、PDF、报告、业务库和检查点
 
 services:
   backend:
@@ -19,7 +19,7 @@ services:
     container_name: scholarai-backend
     restart: unless-stopped
     env_file:
-      - ../backend/.env      # ⚠️ 计划原写 ../.env，错误；实际 .env 在 backend/.env
+      - ../backend/.env
     environment:
       # 容器内 Chroma 路径需指向挂载的 data/
       - CHROMA_PERSIST_DIR=/app/data/chroma
@@ -47,7 +47,7 @@ services:
     restart: unless-stopped
     depends_on:
       backend:
-        condition: service_healthy   # 等后端就绪再起，避免 nginx 启动时解析不到 backend 主机名
+        condition: service_healthy   # 等后端存活检查通过；不检查外部 LLM / embedding
     ports:
       - "5173:80"
     healthcheck:

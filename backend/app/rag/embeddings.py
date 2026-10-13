@@ -43,10 +43,7 @@ def _get_remote_client(api_key: str, base_url: str) -> OpenAI:
         raise ValueError(
             "远程 embedding 已启用，但 EMBEDDING_API_KEY（或 OPENAI_API_KEY）为空"
         )
-    kwargs: dict[str, str] = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return OpenAI(**kwargs)
+    return OpenAI(api_key=api_key, base_url=base_url or None)
 
 
 def _remote_client() -> OpenAI:
@@ -57,6 +54,8 @@ def _normalize(vectors: list[list[float]]) -> list[list[float]]:
     """统一归一化，保持本地 BGE 与远程向量在 cosine 检索下行为一致。"""
     normalized: list[list[float]] = []
     for vector in vectors:
+        if not vector or not all(math.isfinite(value) for value in vector):
+            raise ValueError("embedding 服务返回了空向量或非有限值")
         norm = math.sqrt(sum(value * value for value in vector))
         if norm == 0:
             raise ValueError("embedding 服务返回了零向量")
@@ -82,8 +81,17 @@ def _embed_remote(texts: list[str]) -> list[list[float]]:
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """把文本列表编码为向量列表（已 normalize，方便 cosine 相似度）。"""
+    if not texts:
+        return []
+    from app.rag.tokens import embedding_counter
+    count, limit = embedding_counter()
+    if any(count(text) > limit for text in texts):
+        raise ValueError(f"文本超过 embedding 输入上限 {limit} token，拒绝静默截断")
     if _provider() in {"openai", "qwen", "remote", "openai-compatible"}:
-        return _embed_remote(texts)
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), 64):
+            vectors.extend(_embed_remote(texts[start:start + 64]))
+        return vectors
     if _provider() != "bge":
         raise ValueError(
             f"不支持的 EMBEDDING_PROVIDER={settings.embedding_provider!r}，"

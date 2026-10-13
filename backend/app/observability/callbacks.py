@@ -23,7 +23,7 @@ def _extract_tokens(response: LLMResult) -> tuple[int, int]:
     if usage:
         return usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
     try:
-        msg = response.generations[0][0].message  # type: ignore[attr-defined]
+        msg = getattr(response.generations[0][0], "message", None)
         um = getattr(msg, "usage_metadata", None) or {}
         return um.get("input_tokens", 0), um.get("output_tokens", 0)
     except Exception:

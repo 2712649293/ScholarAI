@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from app.agents.nodes.planner import generate_plan, planner_node
 from app.agents.schemas import ResearchPlan
+from langchain_core.messages import AIMessage
 
 # 标准 mock plan 输出（with_structured_output 路径）
 MOCK_PLAN = ResearchPlan(
@@ -44,7 +45,7 @@ def test_generate_plan_returns_research_plan():
     """with_structured_output 路径直接返 ResearchPlan 对象。"""
     struct_mock = AsyncMock()
     struct_mock.ainvoke = AsyncMock(return_value=MOCK_PLAN)
-    fake_llm = AsyncMock()
+    fake_llm = Mock()
     fake_llm.with_structured_output = lambda _schema: struct_mock
     with patch("app.agents.nodes.planner.get_llm", return_value=fake_llm):
         result = asyncio.run(generate_plan("LLM 推理", "normal"))
@@ -57,7 +58,7 @@ def test_generate_plan_handles_dict_return():
     """with_structured_output 返 dict 时走 model_validate。"""
     struct_mock = AsyncMock()
     struct_mock.ainvoke = AsyncMock(return_value=MOCK_PLAN.model_dump())
-    fake_llm = AsyncMock()
+    fake_llm = Mock()
     fake_llm.with_structured_output = lambda _schema: struct_mock
     with patch("app.agents.nodes.planner.get_llm", return_value=fake_llm):
         result = asyncio.run(generate_plan("LLM 推理"))
@@ -66,12 +67,12 @@ def test_generate_plan_handles_dict_return():
 
 def test_generate_plan_fallback_to_json_mode():
     """with_structured_output 失败 → fallback 到 JSON mode + Pydantic。"""
-    fake_llm = AsyncMock()
+    fake_llm = Mock()
     # with_structured_output 抛错
     fake_llm.with_structured_output.side_effect = RuntimeError("not supported")
     # bind(response_format=...) 返回的 mock 有 ainvoke
     fake_bound = AsyncMock()
-    fake_bound.ainvoke = AsyncMock(return_value=AsyncMock(content=MOCK_PLAN.model_dump_json()))
+    fake_bound.ainvoke = AsyncMock(return_value=AIMessage(content=MOCK_PLAN.model_dump_json()))
     fake_llm.bind = lambda **kw: fake_bound
 
     with patch("app.agents.nodes.planner.get_llm", return_value=fake_llm):
@@ -89,7 +90,7 @@ def test_planner_node_first_call_invokes_interrupt():
     """
     struct_mock = AsyncMock()
     struct_mock.ainvoke = AsyncMock(return_value=MOCK_PLAN)
-    fake_llm = AsyncMock()
+    fake_llm = Mock()
     fake_llm.with_structured_output = lambda _schema: struct_mock
 
     interrupt_payloads: list = []

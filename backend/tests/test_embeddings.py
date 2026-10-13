@@ -1,5 +1,16 @@
 """BGE embedding 集成测试：首次跑会从 HF 下载 ~100MB（已下载则秒过）。"""
+import pytest
+
+pytestmark = pytest.mark.integration
+
 from app.rag.embeddings import embed_texts, vector_dim
+
+
+@pytest.fixture(autouse=True)
+def local_bge(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "embedding_provider", "bge")
+    monkeypatch.setattr(settings, "bge_model", "BAAI/bge-small-zh-v1.5")
 
 
 def test_embed_returns_512_dim_normalized() -> None:

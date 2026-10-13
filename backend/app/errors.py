@@ -38,3 +38,7 @@ class SessionNotFound(ScholarAIError):
 
 class ArxivFetchFailed(ScholarAIError):
     code, status_code = "arxiv_fetch_failed", 502
+
+
+class RetrievalUnavailable(ScholarAIError):
+    code, status_code = "retrieval_unavailable", 503

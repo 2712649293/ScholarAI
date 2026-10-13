@@ -5,6 +5,8 @@ import {
   listDocs,
   searchKB,
   uploadDoc,
+  retryDoc,
+  deleteDoc,
   type Doc,
   type KB,
   type SearchHit,
@@ -76,6 +78,18 @@ export function KBDetailPage() {
     }
   }
 
+  async function handleDocAction(docId: string, action: 'retry' | 'delete') {
+    if (!id) return
+    setError(null)
+    try {
+      if (action === 'retry') await retryDoc(id, docId)
+      else await deleteDoc(id, docId)
+      await load()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e))
+    }
+  }
+
   if (loading) return <p className="p-6 text-sm text-zinc-500">加载中…</p>
   if (!kb) return <p className="p-6 text-sm text-red-600">知识库不存在</p>
 
@@ -123,7 +137,13 @@ export function KBDetailPage() {
                   {d.page_count} 页 · {d.status}
                   {d.status === 'failed' && d.error && ` · ${d.error.slice(0, 50)}`}
                 </div>
+                {d.warnings && d.warnings.length > 0 && (
+                  <div className="text-xs text-amber-700" title={d.warnings.join('\n')}>
+                    处理提示：{d.warnings[0]}
+                  </div>
+                )}
               </div>
+              <div className="flex items-center gap-3">
               <span
                 className={
                   d.status === 'indexed'
@@ -133,8 +153,13 @@ export function KBDetailPage() {
                       : 'text-xs text-amber-600'
                 }
               >
-                {d.status}
+                {d.status === 'pending' ? ({ parsing: '解析论文', vision: '处理图片', chunking: '整理段落', embedding: '生成索引', indexing: '保存索引' } as Record<string, string>)[d.processing_stage ?? ''] ?? '等待处理' : d.status}
               </span>
+              {d.status !== 'pending' && (
+                <button onClick={() => handleDocAction(d.id, 'retry')} className="text-xs text-blue-600">重新处理</button>
+              )}
+              <button onClick={() => handleDocAction(d.id, 'delete')} className="text-xs text-red-600">删除</button>
+              </div>
             </li>
           ))}
         </ul>
@@ -163,7 +188,10 @@ export function KBDetailPage() {
           {hits.map((h, i) => (
             <li key={i} className="rounded-md border border-zinc-200 bg-white p-3 text-sm">
               <div className="mb-1 text-xs text-zinc-500">
-                doc:{h.doc_id.slice(0, 8)} p.{h.page} · score {h.score.toFixed(3)}
+                doc:{h.doc_id.slice(0, 8)} p.{h.page}{h.page_end && h.page_end !== h.page ? `–${h.page_end}` : ''}
+                {h.section && ` · ${h.section}`}
+                {h.figure_ids?.length ? ` · 图 ${h.figure_ids.join(', ')}` : ''}
+                {h.rerank_score != null ? ` · 重排分数 ${h.rerank_score.toFixed(3)}` : ` · 融合分数 ${h.score.toFixed(4)}`}
               </div>
               <div className="text-zinc-800">{h.text}</div>
             </li>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { chatQA, ApiError, listKBs, createKB, deleteKB } from './api'
+import { chatQA, ApiError, listKBs, createKB, deleteKB, researchStream } from './api'
 
 describe('api.chatQA', () => {
   beforeEach(() => {
@@ -45,6 +45,46 @@ describe('api.chatQA', () => {
       }),
     )
     await expect(chatQA('')).rejects.toThrow(ApiError)
+  })
+})
+
+describe('SSE transport', () => {
+  it('parses split UTF-8, CRLF and multiline JSON data', async () => {
+    const bytes = new TextEncoder().encode('event: final\r\ndata: {\r\ndata: "text": "中文"}\r\n\r\n')
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+        controller.close()
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stream)))
+    const event = await new Promise<[string, unknown]>((resolve) => {
+      researchStream({ query: 'q' }, (name, data) => resolve([name, data]))
+    })
+    expect(event).toEqual(['final', { text: '中文' }])
+  })
+
+  it('reports a premature EOF so the UI does not stay busy', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(': keepalive\n\n')))
+    const event = await new Promise<[string, unknown]>((resolve) => {
+      researchStream({ query: 'q' }, (name, data) => resolve([name, data]))
+    })
+    expect(event).toEqual(['error', { message: 'SSE 连接提前结束，请重试' }])
+  })
+
+  it('does not emit an error on intentional cancellation', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_path, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })))
+    const onEvent = vi.fn()
+    researchStream({ query: 'q' }, onEvent)()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('shows the backend HTTPException detail message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: { code: 'invalid_pdf', message: '不是合法 PDF 文件' } }), { status: 400 })))
+    await expect(createKB('x')).rejects.toMatchObject({ code: 'invalid_pdf', message: '不是合法 PDF 文件' })
   })
 })
 

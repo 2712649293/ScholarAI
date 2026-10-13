@@ -9,15 +9,17 @@
 """
 from __future__ import annotations
 
-import json
+import asyncio
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
-from langgraph.errors import GraphRecursionError
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from app.agents.plan_graph import build_plan_graph
 from app.agents.research_agent import RECURSION_LIMIT, build_agent
@@ -28,11 +30,14 @@ from app.agents.schemas import (
     PlanEditRequest,
     PlanRequest,
     PlanResponse,
+    ResearchPlan,
 )
 from app.config import settings
 from app.observability.callbacks import HANDLER
 from app.schemas.research import PaperOut, ResearchRequest, ResearchResponse
 from app.session_store import store
+from app import research_runs
+from app.observability.logging import logger
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
@@ -41,11 +46,14 @@ DEPTH_CAP = {"quick": 8, "normal": 20, "deep": 40}
 NO_REPORT = "（未能生成综述，可能未检索到相关论文）"
 
 
-def _sse(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+def _validate_plan(plan: dict) -> dict:
+    try:
+        return ResearchPlan.model_validate(plan).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(422, detail=exc.errors(include_context=False)) from exc
 
 
-def _agent_config(thread_id: str) -> dict:
+def _agent_config(thread_id: str) -> RunnableConfig:
     return {
         "recursion_limit": RECURSION_LIMIT,
         "callbacks": [HANDLER],
@@ -66,6 +74,7 @@ def _initial_state(req: ResearchRequest, session_id: str) -> dict:
         "session_id": session_id,
         "depth": req.depth,
         "max_papers": min(req.max_papers, cap),
+        "messages": [HumanMessage(content=req.query)],
     }
 
 
@@ -78,8 +87,9 @@ def _save_report(session_id: str, report: str) -> str:
 
 
 async def _finalize(
-    session_id: str, agent, config: dict
-) -> tuple[str, str, list, str | None]:
+    session_id: str, agent: Any, config: RunnableConfig, *, query: str | None = None,
+    draft_before: str | None = None, msg_count_before: int | None = None,
+) -> tuple[str, str, list, str | None, str | None]:
     """从 checkpointer 读最终 state → 落盘报告 + 写 messages（侧边栏用）。
 
     M5.5.10: 返回 failure_reason 让前端能渲染失败提示：
@@ -90,6 +100,12 @@ async def _finalize(
     snap = await agent.aget_state(config)
     state = snap.values if snap else {}
     draft = state.get("draft") or NO_REPORT
+    # 先确定本轮回复，再统一写文件和消息，保证 SSE、历史与导出一致。
+    if msg_count_before is not None and state.get("draft") == draft_before:
+        for message in reversed(state.get("messages", [])[msg_count_before:]):
+            if type(message).__name__ == "AIMessage" and message.content and not message.tool_calls:
+                draft = message.text
+                break
     papers = state.get("papers", []) or []
     download_failures = state.get("download_failures", []) or []
 
@@ -102,11 +118,11 @@ async def _finalize(
 
     report_path = _save_report(session_id, draft)
     # 写 messages 表（仅供侧边栏展示，不是 agent state 的一部分）
-    query = state.get("query", "")
+    query = state.get("query", "") if query is None else query
     if query:
         store.add_message(session_id, "user", query)
-    store.add_message(session_id, "assistant", draft)
-    return draft, report_path, papers, failure_reason
+    message_id = store.add_message(session_id, "assistant", draft)
+    return draft, report_path, papers, failure_reason, message_id
 
 
 @router.post("", response_model=ResearchResponse)
@@ -115,60 +131,79 @@ async def start_research(req: ResearchRequest) -> ResearchResponse:
     session = store.get_or_create(req.session_id, mode="research")
     agent = build_agent()
     config = _agent_config(session.id)
-    try:
-        await agent.ainvoke(_initial_state(req, session.id), config=config)
-    except GraphRecursionError:
-        pass
-
-    draft, report_path, papers, failure_reason = await _finalize(session.id, agent, config)
+    run = research_runs.start(session.id, lambda run: _run_research(
+        session.id, run, agent, _initial_state(req, session.id), config))
+    if run.task:
+        await asyncio.shield(run.task)
+    if run.error:
+        raise HTTPException(500, run.error)
+    final = next(data for event, data in run.events if event == "final")
     return ResearchResponse(
         session_id=session.id,
-        report_markdown=draft,
-        report_path=report_path,
-        papers=[PaperOut(**p) for p in papers],
-        failure_reason=failure_reason,
+        report_markdown=final["report_markdown"],
+        report_path=final["report_path"],
+        papers=[PaperOut(**p) for p in final["papers"]],
+        failure_reason=final["failure_reason"],
     )
+
+
+async def _run_research(
+    sid: str, run: research_runs.ResearchRun, agent: Any, initial: Any,
+    config: RunnableConfig, **finalize_kwargs: Any,
+) -> dict:
+    seen: set[str] = set()
+    async def emit_calls(messages: list) -> None:
+        for message in messages:
+            for call in getattr(message, "tool_calls", None) or []:
+                if call["id"] in seen:
+                    continue
+                seen.add(call["id"])
+                await run.emit("step", {"node": call["name"]})
+                logger.info("research.step", session_id=sid, node=call["name"])
+
+    if initial is None:
+        snap = await agent.aget_state(config, subgraphs=True)
+        if "researcher" in snap.next:
+            snap = next(task.state for task in snap.tasks if task.name == "researcher")
+        if "tools" in snap.next:
+            for message in reversed(snap.values.get("messages", [])):
+                if getattr(message, "tool_calls", None):
+                    await emit_calls([message])
+                    break
+    async for namespace, chunk in agent.astream(
+        initial, stream_mode="updates", subgraphs=True, config=config,
+    ):
+        for node, update in (chunk or {}).items():
+            if node == "__interrupt__" or (not namespace and node == "researcher"):
+                continue
+            await emit_calls((update or {}).get("messages", []))
+    draft, report_path, papers, failure_reason, message_id = await _finalize(sid, agent, config, **finalize_kwargs)
+    return {"session_id": sid, "report_markdown": draft, "report_path": report_path,
+            "papers": papers, "failure_reason": failure_reason, "message_id": message_id}
+
+
+def _research_response(sid: str, agent: Any, initial: Any, config: RunnableConfig,
+                       **finalize_kwargs: Any) -> StreamingResponse:
+    run = research_runs.start(sid, lambda run: _run_research(
+        sid, run, agent, initial, config, **finalize_kwargs))
+    return StreamingResponse(research_runs.stream(sid, run), media_type="text/event-stream")
 
 
 @router.post("/stream")
 async def start_research_stream(req: ResearchRequest) -> StreamingResponse:
-    """SSE 流式：每次 tool 调用推一条 step，末尾 final。"""
     session = store.get_or_create(req.session_id, mode="research")
-    agent = build_agent()
-    config = _agent_config(session.id)
+    return _research_response(session.id, build_agent(), _initial_state(req, session.id),
+                              _agent_config(session.id))
 
-    async def gen():
-        try:
-            async for chunk in agent.astream(
-                _initial_state(req, session.id),
-                stream_mode="updates",
-                config=config,
-            ):
-                for update in (chunk or {}).values():
-                    for m in (update or {}).get("messages", []):
-                        for tc in getattr(m, "tool_calls", None) or []:
-                            yield _sse("step", {"node": tc["name"]})
-        except GraphRecursionError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            yield _sse("error", {"code": "internal_error", "message": str(e)})
-            return
 
-        draft, report_path, papers, failure_reason = await _finalize(session.id, agent, config)
-        yield _sse(
-            "final",
-            {
-                "session_id": session.id,
-                "report_markdown": draft,
-                "report_path": report_path,
-                "papers": papers,
-                "failure_reason": failure_reason,  # M5.5.10
-            },
-        )
-        # ponytail: 多发一个空 keep-alive 防 uvicorn/proxy 缓冲挂起
-        yield ": done\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+@router.get("/{sid}/events")
+async def research_events(sid: str) -> StreamingResponse:
+    if store.get(sid) is None:
+        raise HTTPException(404, "会话不存在")
+    run = research_runs.runs.get(sid)
+    if run is None:
+        raise HTTPException(409, "当前服务没有该研究任务，请刷新查看状态")
+    return StreamingResponse(research_runs.stream(sid, run), media_type="text/event-stream")
 
 
 # === M5.5 Plan API ===
@@ -187,6 +222,17 @@ async def _plan_initial_state(req: PlanRequest, session_id: str) -> dict:
 async def _build_plan_graph():
     """构造 plan graph。checkpointer 单例。"""
     return build_plan_graph()
+
+
+async def _execution_snapshot(graph: Any, config: RunnableConfig) -> tuple[Any, Any]:
+    snap = await graph.aget_state(config)
+    # Followups use the standalone graph; the plan graph cannot resolve its pending tools.
+    if snap and snap.values.get("plan_status") == "approved" and not snap.next:
+        agent = build_agent()
+        agent_snap = await agent.aget_state(config)
+        if agent_snap.next:
+            return agent, agent_snap
+    return graph, snap
 
 
 @router.post("/plan", response_model=PlanResponse, status_code=202)
@@ -218,6 +264,7 @@ async def start_plan(req: PlanRequest) -> PlanResponse:
         )
 
     initial = await _plan_initial_state(req, session.id)
+    research_runs.ensure_idle(session.id)
 
     # 跑直到 interrupt
     interrupted_payload: dict | None = None
@@ -258,15 +305,27 @@ async def get_plan(sid: str) -> PlanResponse:
     """读 checkpointer 里当前 plan 状态。"""
     graph = await _build_plan_graph()
     config = _agent_config(sid)
-    snap = await graph.aget_state(config)
+    _, snap = await _execution_snapshot(graph, config)
     if not snap:
         return PlanResponse(session_id=sid, plan_status="none")
     s = snap.values or {}
+    run = research_runs.runs.get(sid)
+    from app.db.models import SessionModel
+    from app.db.session import SessionLocal
+    with SessionLocal() as db:
+        session = db.get(SessionModel, sid)
+        execution_status = session.status if session else "idle"
+    error = run.error if run else None
+    can_resume = s.get("plan_status") == "approved" and bool(snap.next) and not (run and not run.finished)
+    if can_resume and execution_status != "failed":
+        execution_status = "interrupted"
+    if execution_status in {"failed", "interrupted"} and not error:
+        error = "研究执行已中断，可从检查点继续" if can_resume else "研究执行失败，请查看后端日志"
     return PlanResponse(
-        session_id=sid,
-        plan=s.get("plan"),
-        plan_status=s.get("plan_status") or "none",
-        plan_generated_at=s.get("plan_generated_at"),
+        session_id=sid, plan=s.get("plan"), plan_status=s.get("plan_status") or "none",
+        plan_generated_at=s.get("plan_generated_at"), execution_status=execution_status,
+        execution_steps=[data["node"] for event, data in run.events if event == "step"] if run else [],
+        execution_error=error, can_resume=can_resume,
     )
 
 
@@ -277,17 +336,18 @@ async def edit_plan(sid: str, req: PlanEditRequest) -> PlanResponse:
     ponytail：只覆盖客户端传的字段（merge），不删除其它 plan 字段；
     status 强制设为 "edited"。
     """
+    research_runs.ensure_idle(sid)
     graph = await _build_plan_graph()
     config = _agent_config(sid)
     snap = await graph.aget_state(config)
     if not snap or not snap.values.get("plan"):
         raise HTTPException(404, "session 无 plan 可编辑")
+    if snap.values.get("plan_status") not in {"pending", "edited"}:
+        raise HTTPException(409, "只能编辑待审批计划")
 
     cur = dict(snap.values)
-    merged = {**cur.get("plan", {}), **req.plan}
-    cur["plan"] = merged
-    cur["plan_status"] = "edited"
-    await graph.aupdate_state(config, cur)
+    merged = _validate_plan({**cur.get("plan", {}), **req.plan})
+    await graph.aupdate_state(config, {"plan": merged, "plan_status": "edited"})
 
     return PlanResponse(
         session_id=sid,
@@ -300,6 +360,8 @@ async def edit_plan(sid: str, req: PlanEditRequest) -> PlanResponse:
 @router.post("/{sid}/plan/approve")
 async def approve_plan(sid: str, req: ApproveRequest | None = None) -> StreamingResponse:
     """批准 plan → Command(resume=approve) → 续接跑 researcher（create_agent）→ SSE 推 step+final。"""
+    research_runs.ensure_idle(sid)
+
     graph = await _build_plan_graph()
     config = _agent_config(sid)
 
@@ -307,10 +369,12 @@ async def approve_plan(sid: str, req: ApproveRequest | None = None) -> Streaming
     snap = await graph.aget_state(config)
     if not snap or not snap.values.get("plan"):
         raise HTTPException(404, "session 无 plan 可批准")
+    if snap.values.get("plan_status") not in {"pending", "edited"}:
+        raise HTTPException(409, "计划已结束审批，请通过追问接口继续研究")
     cur_plan = snap.values.get("plan")
 
     # 优先用 req.edited_plan（PATCH 不调直接 approve 也可传）；否则用 state 当前 plan
-    edited = req.edited_plan if req else None
+    edited = _validate_plan(req.edited_plan) if req and req.edited_plan is not None else None
 
     decision: dict = {"action": "approve"}
     if edited:
@@ -319,39 +383,7 @@ async def approve_plan(sid: str, req: ApproveRequest | None = None) -> Streaming
         # PATCH 后未传 edited_plan → 用 state 当前 plan
         decision["edited_plan"] = cur_plan
 
-    async def gen():
-        try:
-            async for chunk in graph.astream(
-                Command(resume=decision), config=config, stream_mode="updates"
-            ):
-                if "__interrupt__" in (chunk or {}):
-                    # 不应再触发 interrupt；跳过
-                    continue
-                for update in (chunk or {}).values():
-                    for m in (update or {}).get("messages", []):
-                        for tc in getattr(m, "tool_calls", None) or []:
-                            yield _sse("step", {"node": tc["name"]})
-        except GraphRecursionError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            yield _sse("error", {"code": "internal_error", "message": str(e)})
-            return
-
-        # 读最终 state（researcher 跑完 → plan_status 应为 approved）
-        draft, report_path, papers, failure_reason = await _finalize(sid, graph, config)
-        yield _sse(
-            "final",
-            {
-                "session_id": sid,
-                "report_markdown": draft,
-                "report_path": report_path,
-                "papers": papers,
-                "failure_reason": failure_reason,  # M5.5.10
-            },
-        )
-        yield ": done\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return _research_response(sid, graph, Command(resume=decision), config)
 
 
 @router.post("/{sid}/plan/reject", response_model=PlanResponse)
@@ -360,11 +392,14 @@ async def reject_plan(sid: str) -> PlanResponse:
 
     同时清空 plan 字段（让下次 POST /plan 能重新生成）。
     """
+    research_runs.ensure_idle(sid)
     graph = await _build_plan_graph()
     config = _agent_config(sid)
     snap = await graph.aget_state(config)
-    if not snap:
-        raise HTTPException(404, "session 不存在")
+    if not snap or not snap.values.get("plan"):
+        raise HTTPException(404, "session 无 plan 可拒绝")
+    if snap.values.get("plan_status") not in {"pending", "edited"}:
+        raise HTTPException(409, "只能拒绝待审批计划")
 
     async for _ in graph.astream(
         Command(resume={"action": "reject"}), config=config
@@ -372,16 +407,13 @@ async def reject_plan(sid: str) -> PlanResponse:
         pass
 
     # 清 plan 字段，避免下次 POST /plan 被 state.plan 残留拦截
-    cur = dict(snap.values)
-    cur["plan"] = None
-    cur["plan_status"] = "rejected"
-    await graph.aupdate_state(config, cur)
+    await graph.aupdate_state(config, {"plan": None, "plan_status": "rejected"})
 
     return PlanResponse(
         session_id=sid,
         plan=None,
         plan_status="rejected",
-        plan_generated_at=cur.get("plan_generated_at"),
+        plan_generated_at=snap.values.get("plan_generated_at"),
     )
 
 
@@ -395,12 +427,14 @@ async def continue_research_stream(
 
     - 校验 plan_status=='approved'，否则 409（未 plan / plan pending 时追问应先走 /plan）
     - checkpointer 共享：state 自动恢复（含 plan / draft / papers / 历史 messages）
-    - input 只传 {"messages": [HumanMessage(query)]}，不覆盖 query/depth/max_papers
+    - input 追加 HumanMessage 和恢复上下文，不覆盖 query/depth/max_papers
     - agent 看到 history + 新 query，按 SYSTEM_PROMPT 意图识别调工具：
       "修改综述" → write_review；"再检索" → search_arxiv；"问答" → 不调工具
     - SSE 协议同 /plan/approve：step + final + :done
     - 末尾 _finalize 复用写 store 逻辑
     """
+    research_runs.ensure_idle(sid)
+
     config = _agent_config(sid)
 
     # 1) 校验：plan_status 必须 approved
@@ -420,61 +454,30 @@ async def continue_research_stream(
     draft_before = snap.values.get("draft") if snap else None
     msg_count_before = len(snap.values.get("messages", [])) if snap else 0
 
-    async def gen():
-        try:
-            async for chunk in agent.astream(
-                {"messages": [new_human]},
-                stream_mode="updates",
-                config=config,
-            ):
-                for update in (chunk or {}).values():
-                    for m in (update or {}).get("messages", []):
-                        for tc in getattr(m, "tool_calls", None) or []:
-                            yield _sse("step", {"node": tc["name"]})
-        except GraphRecursionError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            yield _sse("error", {"code": "internal_error", "message": str(e)})
-            return
+    _, execution_snap = await _execution_snapshot(graph, config)
+    if execution_snap.next:
+        raise HTTPException(409, "上次研究尚未完成，请先恢复执行")
+    return _research_response(
+        sid, agent, {"messages": [new_human], "run_query": req.query,
+                     "run_draft_before": draft_before, "run_msg_count_before": msg_count_before},
+        config, query=req.query,
+        draft_before=draft_before, msg_count_before=msg_count_before,
+    )
 
-        draft, report_path, papers, failure_reason = await _finalize(sid, agent, config)
 
-        # M5.5.11: draft 没变 → 纯问答 → 用 agent 新增的最后一条 AIMessage 作为
-        # 报告内容（不重推旧草稿）。
-        if draft_before and draft == draft_before:
-            msg_snap = await agent.aget_state(config)
-            all_msgs = msg_snap.values.get("messages", []) if msg_snap else []
-            new_msgs = all_msgs[msg_count_before:]  # 只看 astream 新增的
-            # 逆序找最后一条 AIMessage（不含 tool_calls —— agent 的最终回复）
-            last_ai = None
-            for m in reversed(new_msgs):
-                if type(m).__name__ == "AIMessage" and not m.tool_calls:
-                    last_ai = m.content
-                    break
-            if last_ai and last_ai != draft:
-                yield _sse(
-                    "final",
-                    {
-                        "session_id": sid,
-                        "report_markdown": last_ai,
-                        "report_path": report_path,
-                        "papers": papers,
-                        "failure_reason": failure_reason,
-                    },
-                )
-                yield ": done\n\n"
-                return
-
-        yield _sse(
-            "final",
-            {
-                "session_id": sid,
-                "report_markdown": draft,
-                "report_path": report_path,
-                "papers": papers,
-                "failure_reason": failure_reason,
-            },
-        )
-        yield ": done\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+@router.post("/{sid}/resume/stream")
+async def resume_research(sid: str) -> StreamingResponse:
+    if store.get(sid) is None:
+        raise HTTPException(404, "会话不存在")
+    research_runs.ensure_idle(sid)
+    graph = await _build_plan_graph()
+    config = _agent_config(sid)
+    agent, snap = await _execution_snapshot(graph, config)
+    if not snap or snap.values.get("plan_status") != "approved" or not snap.next:
+        raise HTTPException(409, "没有可恢复的已批准研究")
+    kwargs = {}
+    if agent is not graph and "run_query" in snap.values:
+        kwargs = {"query": snap.values["run_query"],
+                  "draft_before": snap.values.get("run_draft_before"),
+                  "msg_count_before": snap.values.get("run_msg_count_before")}
+    return _research_response(sid, agent, None, config, **kwargs)

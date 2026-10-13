@@ -12,7 +12,11 @@ from pathlib import Path
 
 import aiosqlite
 from langchain.agents import create_agent
+from langchain.agents.middleware import before_model
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Overwrite
+from langgraph.runtime import Runtime
 
 from app.agents.state import ResearchState
 from app.agents.tools import make_tools
@@ -57,7 +61,16 @@ def get_saver() -> AsyncSqliteSaver:
     return _saver
 
 
-def build_agent() -> object:
+@before_model
+def cap_papers(state: ResearchState, runtime: Runtime) -> dict | None:
+    papers = state.get("papers", [])
+    cap = state.get("max_papers", 20)
+    if len(papers) > cap:
+        return {"papers": Overwrite(papers[:cap])}
+    return None
+
+
+def build_agent() -> CompiledStateGraph:
     """构造带 checkpointer 的 ReAct agent。调用前必须 init_saver。"""
     if _saver is None:
         raise RuntimeError("saver 未初始化：先在 lifespan 里调 init_saver()")
@@ -67,6 +80,7 @@ def build_agent() -> object:
         system_prompt=SYSTEM_PROMPT,
         state_schema=ResearchState,
         checkpointer=_saver,
+        middleware=[cap_papers],
     )
 
 

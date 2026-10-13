@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 # ponytail: 进程一启动就强制 HF 离线，避免 BGE 模型加载时联网拉 adapter_config.json
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -24,13 +25,14 @@ from app.errors import ScholarAIError  # noqa: E402
 from app.observability import metrics  # noqa: E402
 from app.observability.logging import configure_logging, logger  # noqa: E402
 from app.observability.tracing import setup_tracing  # noqa: E402
-from app.rag.cleanup import cleanup_stale_knowledge_bases  # noqa: E402
+from app.rag.cleanup import cleanup_stale_knowledge_bases, recover_interrupted_documents  # noqa: E402
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """M4.5.1: 启动时初始化 langgraph checkpointer（async），退出时关闭。"""
     removed = cleanup_stale_knowledge_bases()
+    recover_interrupted_documents()
     if removed:
         logger.warning(
             "rag.stale_knowledge_bases_removed",
@@ -40,9 +42,12 @@ async def lifespan(app: FastAPI):
             else settings.bge_model,
         )
     await research_agent.init_saver()
+    from app import research_runs
+    research_runs.recover_interrupted()
     try:
         yield
     finally:
+        await research_runs.shutdown()
         await research_agent.close_saver()
 
 configure_logging()
@@ -65,7 +70,7 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def observe_request(request: Request, call_next):
+async def observe_request(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """生成 X-Request-ID，绑定 structlog 上下文，并计 Prometheus 请求指标。"""
     rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex
     request.state.request_id = rid
@@ -86,7 +91,7 @@ async def observe_request(request: Request, call_next):
 
 
 @app.exception_handler(ScholarAIError)
-async def scholarai_error_handler(request: Request, exc: ScholarAIError):
+async def scholarai_error_handler(request: Request, exc: ScholarAIError) -> JSONResponse:
     rid = getattr(request.state, "request_id", "-")
     logger.warning("api.error", code=exc.code, message=exc.message, path=request.url.path)
     return JSONResponse(
@@ -96,7 +101,7 @@ async def scholarai_error_handler(request: Request, exc: ScholarAIError):
 
 
 @app.exception_handler(Exception)
-async def unhandled_handler(request: Request, exc: Exception):
+async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     rid = getattr(request.state, "request_id", "-")
     logger.exception("api.unhandled", path=request.url.path)
     return JSONResponse(
@@ -143,7 +148,7 @@ def health_ready() -> Response:
 
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        required_tables = {"sessions", "messages", "knowledge_bases", "documents"}
+        required_tables = {"sessions", "messages", "knowledge_bases", "documents", "rag_chunks", "rag_generations", "rag_fts"}
         missing_tables = required_tables - set(inspect(engine).get_table_names())
         if missing_tables:
             checks["db"] = f"fail: missing tables {', '.join(sorted(missing_tables))}"

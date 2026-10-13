@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -91,7 +91,7 @@ def test_plan_endpoint_llm_failure_handled_by_exception_handler(client: TestClie
     错误穿透（不能返 200）。TestClient + unhandled handler 应该返 500。
     """
     # 让 with_structured_output 抛 → fallback 也抛（fake_llm.bind().ainvoke 也抛）
-    fake_llm = AsyncMock()
+    fake_llm = Mock()
     fake_llm.with_structured_output.side_effect = RuntimeError("llm down")
     fallback_bound = AsyncMock()
     fallback_bound.ainvoke.side_effect = RuntimeError("fallback down")

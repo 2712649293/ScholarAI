@@ -10,7 +10,9 @@ SSE 事件：
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from collections.abc import AsyncIterator
+from typing import Any
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
@@ -35,101 +37,77 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _stream_round(graph: Any, config: dict, initial: dict, sid: str, query: str) -> AsyncIterator[str]:
+    from app.session_store import store
+
+    yield _sse("session", {"session_id": sid})
+    snap_before = await graph.aget_state(config)
+    count_before = len(snap_before.values.get("messages", [])) if snap_before else 0
+    store.add_message(sid, "user", query)
+    seen: set[str] = set()
+    try:
+        async for chunk in graph.astream(initial, config=config, stream_mode="updates"):
+            if "__interrupt__" in (chunk or {}):
+                continue
+            for update in (chunk or {}).values():
+                for message in (update or {}).get("messages", [])[count_before:]:
+                    key = message.id or str(id(message))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    for tc in getattr(message, "tool_calls", None) or []:
+                        yield _sse("step", {"node": tc["name"]})
+                    if type(message).__name__ == "AIMessage" and message.content and not message.tool_calls:
+                        content = message.text
+                        store.add_message(sid, "assistant", content)
+                        yield _sse("message", {"content": content})
+        snap = await graph.aget_state(config)
+        state = snap.values if snap else {}
+        if state.get("plan_status") == "pending" and state.get("clarify_direction"):
+            yield _sse("confirmed", {
+                "session_id": sid,
+                "clarify_direction": state["clarify_direction"],
+                "plan_status": "pending",
+            })
+        yield _sse("complete", {"session_id": sid})
+        yield ": done\n\n"
+    except Exception as exc:
+        yield _sse("error", {"code": "internal_error", "message": str(exc)})
+
+
 @router.post("/clarify/stream")
 async def clarify_stream(req: ClarifyRequest) -> StreamingResponse:
-    """启动澄清对话。跑 clarify_agent，SSE 推 message/confirmed。"""
+    """启动澄清；问题必须进入 agent 消息历史，同时保存可供页面恢复的对话。"""
     from app.agents.clarify_graph import build_clarify_graph
     from app.session_store import store
 
     session = store.get_or_create(req.session_id, mode="research")
     config = _agent_config(session.id)
     graph = build_clarify_graph()
-    initial = {"query": req.query, "session_id": session.id, "depth": "normal"}
-
-    async def gen():
-        # M5.6-fix: 先推 session_id，否则前端在 confirmed 前拿不到 id，
-        # 导致多轮澄清追问时 sessionId=undefined → runClarify isContinue 直接 return。
-        yield _sse("session", {"session_id": session.id})
-        # M5.6-fix: create_agent 在 stream_mode="updates" 下输出累积 messages，
-        # 不做过滤会把历史回复全部重发给前端。快照起点后只 yield 新消息。
-        snap_before = await graph.aget_state(config)
-        msg_count_before = len(snap_before.values.get("messages", [])) if snap_before and snap_before.values else 0
-        try:
-            async for chunk in graph.astream(initial, config=config, stream_mode="updates"):
-                if "__interrupt__" in (chunk or {}):
-                    continue
-                for update in (chunk or {}).values():
-                    all_msgs = (update or {}).get("messages", [])
-                    new_msgs = all_msgs[msg_count_before:]
-                    for m in new_msgs:
-                        for tc in getattr(m, "tool_calls", None) or []:
-                            yield _sse("step", {"node": tc["name"]})
-                        if type(m).__name__ == "AIMessage" and m.content and not m.tool_calls:
-                            yield _sse("message", {"content": m.content})
-        except Exception as e:
-            yield _sse("error", {"code": "internal_error", "message": str(e)})
-            return
-
-        snap = await graph.aget_state(config)
-        s = snap.values if snap else {}
-        if s.get("plan_status") == "pending" and s.get("clarify_direction"):
-            yield _sse(
-                "confirmed",
-                {
-                    "session_id": session.id,
-                    "clarify_direction": s["clarify_direction"],
-                    "plan_status": "pending",
-                },
-            )
-        yield ": done\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    initial = {
+        "query": req.query, "session_id": session.id, "depth": "normal",
+        "messages": [HumanMessage(content=req.query)], "plan_status": "clarifying",
+    }
+    return StreamingResponse(
+        _stream_round(graph, config, initial, session.id, req.query),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/{sid}/clarify/continue")
 async def clarify_continue(sid: str, req: ContinueRequest) -> StreamingResponse:
-    """澄清阶段用户回复。追加 HumanMessage，继续跑 clarify agent。"""
+    """澄清阶段用户回复。"""
     from app.agents.clarify_graph import build_clarify_graph
+    from app.session_store import store
 
+    if store.get(sid) is None:
+        raise HTTPException(404, "会话不存在")
     config = _agent_config(sid)
     graph = build_clarify_graph()
-    new_human = HumanMessage(content=req.query)
-
-    async def gen():
-        # 快照当前消息数，只 yield 本轮新增的消息（防历史重发）
-        csnap = await graph.aget_state(config)
-        cmsg_before = len(csnap.values.get("messages", [])) if csnap and csnap.values else 0
-        try:
-            async for chunk in graph.astream(
-                {"messages": [new_human]},
-                stream_mode="updates",
-                config=config,
-            ):
-                if "__interrupt__" in (chunk or {}):
-                    continue
-                for update in (chunk or {}).values():
-                    all_msgs = (update or {}).get("messages", [])
-                    new_msgs = all_msgs[cmsg_before:]
-                    for m in new_msgs:
-                        for tc in getattr(m, "tool_calls", None) or []:
-                            yield _sse("step", {"node": tc["name"]})
-                        if type(m).__name__ == "AIMessage" and m.content and not m.tool_calls:
-                            yield _sse("message", {"content": m.content})
-        except Exception as e:
-            yield _sse("error", {"code": "internal_error", "message": str(e)})
-            return
-
-        snap = await graph.aget_state(config)
-        s = snap.values if snap else {}
-        if s.get("plan_status") == "pending" and s.get("clarify_direction"):
-            yield _sse(
-                "confirmed",
-                {
-                    "session_id": sid,
-                    "clarify_direction": s["clarify_direction"],
-                    "plan_status": "pending",
-                },
-            )
-        yield ": done\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    snap = await graph.aget_state(config)
+    if not snap or snap.values.get("plan_status") != "clarifying":
+        raise HTTPException(409, "会话不在澄清阶段")
+    return StreamingResponse(
+        _stream_round(graph, config, {"messages": [HumanMessage(content=req.query)]}, sid, req.query),
+        media_type="text/event-stream",
+    )

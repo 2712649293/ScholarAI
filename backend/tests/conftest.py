@@ -54,3 +54,27 @@ def client():
     with TestClient(app) as c:
         yield c
     research_agent.CHECKPOINTS_DB = original
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch):
+    """仅替换索引测试的模型调用；保留真实 PDF、分块和 Chroma 流水线。"""
+    import math
+    from app.rag import indexer
+
+    def encode(texts):
+        result = []
+        for text in texts:
+            lower = text.lower()
+            vector = [1.0, float("rag" in lower or "retrieval" in lower), float("lang" in lower)]
+            norm = math.sqrt(sum(value * value for value in vector))
+            result.append([value / norm for value in vector])
+        return result
+
+    monkeypatch.setattr(indexer, "embed_texts", encode)
+    from app.rag import semantic_chunker
+    from app.rag.tokens import context_tokens
+    monkeypatch.setattr(semantic_chunker, "embedding_counter", lambda: (context_tokens, 512))
+    from app.config import settings
+    monkeypatch.setattr(settings, "vision_base_url", "")
+    monkeypatch.setattr(settings, "rerank_endpoint", "")

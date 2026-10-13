@@ -47,10 +47,10 @@ class ResearchPlan(BaseModel):
 class PlanRequest(BaseModel):
     """POST /api/research/plan 启动 plan 生成。"""
 
-    query: str
+    query: str = Field(..., min_length=1, max_length=2000)
     session_id: str | None = None
     depth: Literal["quick", "normal", "deep"] = "normal"
-    max_papers: int = 20
+    max_papers: int = Field(20, ge=1, le=100)
 
 
 class PlanEditRequest(BaseModel):
@@ -71,7 +71,7 @@ class ContinueRequest(BaseModel):
     ponytail：只传 query，agent 通过 checkpointer 自动恢复 state（含 plan / draft / papers）。
     """
 
-    query: str
+    query: str = Field(..., min_length=1, max_length=2000)
 
 
 class ClarifyRequest(BaseModel):
@@ -80,7 +80,7 @@ class ClarifyRequest(BaseModel):
     仅需 query。session_id 可选，首次自动创建。
     """
 
-    query: str
+    query: str = Field(..., min_length=1, max_length=2000)
     session_id: str | None = None
 
 
@@ -92,3 +92,7 @@ class PlanResponse(BaseModel):
     plan: dict | None = None
     plan_status: str  # "none" | "pending" | "edited" | "approved" | "rejected"
     plan_generated_at: str | None = None
+    execution_status: str = "idle"
+    execution_steps: list[str] = Field(default_factory=list)
+    execution_error: str | None = None
+    can_resume: bool = False

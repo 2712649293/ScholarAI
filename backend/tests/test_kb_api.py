@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 import pymupdf
+import pytest
+
+pytestmark = pytest.mark.usefixtures("fake_embeddings")
 from fastapi.testclient import TestClient
 
 from app.main import app

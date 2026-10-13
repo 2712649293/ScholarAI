@@ -76,6 +76,7 @@ def test_qa_with_kb_returns_citations() -> None:
     fake_hits = [
         {
             "text": "RAG 检索增强生成提升事实准确性。",
+            "kb_id": "kb-1",
             "doc_id": "doc-abc",
             "page": 3,
             "chunk_index": 0,
@@ -83,6 +84,7 @@ def test_qa_with_kb_returns_citations() -> None:
         },
         {
             "text": "LangGraph 是 LangChain 的扩展，支持循环与状态。",
+            "kb_id": "kb-1",
             "doc_id": "doc-def",
             "page": 1,
             "chunk_index": 2,
@@ -99,7 +101,7 @@ def test_qa_with_kb_returns_citations() -> None:
 
     with (
         patch("app.api.chat.call_llm", new=AsyncMock(side_effect=fake_call_llm)),
-        patch("app.api.chat.indexer.search", return_value=fake_hits),
+        patch("app.api.chat.indexer.search_many", return_value=fake_hits),
     ):
         resp = client.post(
             "/api/chat/qa",
@@ -125,13 +127,14 @@ def test_qa_without_kb_has_no_citations() -> None:
     assert resp.json()["citations"] == []
 
 
-def test_qa_rag_search_failure_degrades_gracefully() -> None:
-    """单 KB 检索失败不阻断整体流程（§8.3 降级）。"""
+def test_qa_rag_total_failure_is_reported() -> None:
+    """Both retrieval branches unavailable must not look like no relevant evidence."""
+    from app.errors import RetrievalUnavailable
     _setup_clean_store()
     with (
         patch("app.api.chat.call_llm", new=AsyncMock(return_value="回答")),
-        patch("app.api.chat.indexer.search", side_effect=RuntimeError("chroma down")),
+        patch("app.api.chat.indexer.search_many", side_effect=RetrievalUnavailable("检索不可用")),
     ):
         resp = client.post("/api/chat/qa", json={"query": "x", "kb_ids": ["kb-bad"]})
-    assert resp.status_code == 200
-    assert resp.json()["citations"] == []
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "retrieval_unavailable"

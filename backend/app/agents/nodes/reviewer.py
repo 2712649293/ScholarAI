@@ -4,8 +4,9 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 
-from app.agents.state import ResearchState
+from app.agents.state import ResearchContext
 from app.llm import call_llm
 
 
@@ -24,7 +25,12 @@ SYSTEM = (
 )
 
 
-async def run(state: ResearchState) -> ResearchState:
+class ReviewUpdate(TypedDict):
+    passed: bool
+    feedback: str
+
+
+async def run(state: ResearchContext) -> ReviewUpdate:
     papers = state.get("papers", [])
     if not papers:  # 无论文，无需审校
         return {"passed": True, "feedback": ""}

@@ -9,6 +9,7 @@ dev 网络不可达时优雅降级，返回 "搜索不可用"。
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
@@ -71,14 +72,14 @@ def make_clarify_tools() -> list:
     @tool
     async def web_search(query: str, runtime: ToolRuntime) -> ToolMessage:
         """搜索网页了解前沿术语/现状。返回摘要。失败返回"搜索不可用"。"""
-        result = _search_web(query)
+        result = await asyncio.to_thread(_search_web, query)
         return _msg(runtime, result)
 
     @tool
     async def confirm_direction(
         refined_query: str,
         runtime: ToolRuntime,
-        year_start: int = 2021,
+        year_start: int | None = None,
         year_end: int | None = None,
         notes: str = "",
     ) -> Command:
@@ -86,12 +87,16 @@ def make_clarify_tools() -> list:
 
         Args:
             refined_query: 细化后的研究方向（完整的句子，替代用户原始 query）
-            year_start: 检索起始年份（默认 2021 即近5年）
+            year_start: 检索起始年份（默认当前年份减5）
             year_end: 检索截止年份（默认当前年份）
             notes: 补充说明（如"侧重MAC层"、"排除物理层"等）
         """
         if year_end is None:
             year_end = datetime.now(timezone.utc).year
+        if year_start is None:
+            year_start = datetime.now(timezone.utc).year - 5
+        if not 1900 <= year_start <= year_end <= datetime.now(timezone.utc).year:
+            return Command(update={"messages": [_msg(runtime, "年份范围无效，请提供从1900年至当前年份的起止年份。") ]})
         return Command(
             update={
                 # LangGraph require: LLM call tool → must have matching ToolMessage

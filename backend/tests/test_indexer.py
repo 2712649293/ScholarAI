@@ -6,6 +6,9 @@ import uuid
 from pathlib import Path
 
 import pymupdf
+import pytest
+
+pytestmark = pytest.mark.usefixtures("fake_embeddings")
 
 from app.rag import indexer
 

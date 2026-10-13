@@ -50,10 +50,15 @@ def get_session(session_id: str, db: Session = Depends(get_db)) -> SessionDetail
 
 
 @router.delete("/{session_id}", status_code=204)
-def delete_session(session_id: str, db: Session = Depends(get_db)) -> None:
+async def delete_session(session_id: str, db: Session = Depends(get_db)) -> None:
     s = db.get(SessionModel, session_id)
     if s is None:
         raise _not_found()
+    if s.mode == "research":
+        from app import research_runs
+        await research_runs.cancel(session_id)
+        from app.agents.research_agent import get_saver
+        await get_saver().adelete_thread(session_id)
     db.delete(s)  # cascade 删 messages
     db.commit()
     # M2: 删 session 的 paper 文件夹（避免 orphan PDF 堆在 data/papers/）

@@ -63,7 +63,7 @@ async def generate_plan(query: str, depth: str = "normal") -> ResearchPlan:
         # Fallback：JSON mode + Pydantic 校验
         llm = get_llm().bind(response_format={"type": "json_object"})
         raw = await llm.ainvoke(msgs)
-        content = raw.content if hasattr(raw, "content") else str(raw)
+        content = raw.text
         return ResearchPlan.model_validate_json(content)
 
 
@@ -82,34 +82,18 @@ async def planner_node(state: ResearchState) -> dict:
     首次进入 → 生成 plan + 触发 interrupt
     resume 时 → 根据用户决议更新 plan_status（approved / rejected）
     """
-    # === 首次：生成 plan ===
-    if not state.get("plan"):
-        plan = await generate_plan(state["query"], state.get("depth", "normal"))
-        # 关键顺序：return 在 interrupt 之前。langgraph 设计：
-        # - node 返回 dict 是 update，会被 checkpointer 持久化
-        # - interrupt() 抛 GraphInterrupt 暂停 graph，但 update 已被记录
-        # - resume 时整个 node 重跑（"re-executing all logic"），state.get("plan")
-        #   已存在 → 走下面 resume 分支
-        # 这保证 GET /{sid}/plan 立刻能拿到（前端能渲染卡片 + 调 patch）。
-        # 注：interrupt 必须在 return 之前——否则 return 没机会执行就被中断。
-        # 但我们用 interrupt() 抛 GraphInterrupt 后，**整个 node 不再 return**，
-        # 所以 update 走"node 完成前抛出"路径：langgraph 把 node 已执行的写入
-        # （含 callable 调用产生的 dict）作为 update 持久化。
-        payload = _planner_payload_for_client(plan.model_dump(), state.get("session_id", ""))
-        # 用变量 + 显式 raise 模式——plan 写到 local，interrupt 后函数不 return，
-        # 但 langgraph runtime 会通过 other mechanism 持久化 state（plan = checkpointer
-        # 在 interrupt 时回写 input state 的方式）。
-        # 实际我们靠的是：**state 字段 + interrupt 触发前 node 已执行的 side effect**
-        # ——但这不可靠，所以改用 aupdate_state 兜底：在 start_plan API 调一次。
-        _ = interrupt(payload)
-        return {  # pragma: no cover
-            "plan": plan.model_dump(),
-            "plan_status": "pending",
+    existing_plan = state.get("plan")
+    if not existing_plan:
+        generated_plan = await generate_plan(state["query"], state.get("depth", "normal"))
+        # interrupt 会暂停节点且不会提交 return 更新。API 从 payload 写入 plan，
+        # resume 重跑本节点时即可读取 existing_plan，避免重复生成。
+        interrupt(_planner_payload_for_client(generated_plan.model_dump(), state.get("session_id", "")))
+        return {
+            "plan": generated_plan.model_dump(), "plan_status": "pending",
             "plan_generated_at": _now_iso(),
         }
 
-    # === resume：拿用户决议 ===
-    decision = interrupt(_planner_payload_for_client(state["plan"], state.get("session_id", "")))
+    decision = interrupt(_planner_payload_for_client(existing_plan, state.get("session_id", "")))
     # decision = {"action": "approve"|"reject", "edited_plan": {...} 可选}
 
     if not isinstance(decision, dict):
@@ -117,11 +101,11 @@ async def planner_node(state: ResearchState) -> dict:
         return {"plan_status": "rejected"}
 
     action = decision.get("action")
-    if action == "reject":
+    if action != "approve":
         return {"plan_status": "rejected"}
 
     # approve：可选 edited_plan
-    plan = decision.get("edited_plan") or state["plan"]
+    plan = decision.get("edited_plan") or existing_plan
     # 提取 sub_questions 字符串列表（researcher agent 用）和 search_queries 字符串列表
     sub_q = [sq.get("question", "") if isinstance(sq, dict) else sq for sq in plan.get("sub_questions", [])]
     sq_groups = plan.get("search_queries", [])

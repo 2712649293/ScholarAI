@@ -7,9 +7,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
-from app.agents.state import ResearchState
+from app.agents.state import ResearchContext
 from app.llm import call_llm
-from app.rag.pdf_loader import load_pdf
+from app.rag.markdown_pdf import parse_pdf
+from app.rag.pdf_loader import PageText
+from pathlib import Path
+import tempfile
+
+
+def load_pdf(path: str) -> list[PageText]:
+    with tempfile.TemporaryDirectory(prefix="scholarai-analysis-") as directory:
+        return parse_pdf(path, Path(directory)).pages
+
 
 MAX_CONCURRENT = 5
 MAX_CHARS = 20000  # ~6-8k token，防止超 LLM 上下文（§12 长文先截断）
@@ -56,7 +65,7 @@ async def _analyze_one(sem: asyncio.Semaphore, paper: dict) -> dict | None:
     return {"arxiv_id": paper["arxiv_id"], "title": paper["title"], **parsed.model_dump()}
 
 
-async def run(state: ResearchState) -> ResearchState:
+async def run(state: ResearchContext) -> ResearchContext:
     papers = state.get("papers", [])
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     results = await asyncio.gather(*(_analyze_one(sem, p) for p in papers))

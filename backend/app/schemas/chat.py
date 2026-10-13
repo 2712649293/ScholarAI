@@ -11,6 +11,12 @@ class Citation(BaseModel):
     chunk_index: int
     text: str
     score: float
+    page_end: int | None = None
+    section: str = ""
+    figure_ids: list[str] = Field(default_factory=list)
+    source_spans: list[dict] = Field(default_factory=list)
+    chunk_id: str = ""
+    rerank_score: float | None = None
 
 
 class ChatRequest(BaseModel):

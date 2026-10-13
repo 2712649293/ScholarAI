@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -10,6 +11,8 @@ from app.config import settings
 from app.db.models import KnowledgeBase
 from app.db.session import SessionLocal
 from app.rag import vector_store
+from app.rag import keyword_store
+from app.rag.indexer import artifact_root
 from app.rag.embeddings import embedding_model_name
 
 
@@ -22,13 +25,14 @@ def _is_current_model(stored_model: str, current_model: str) -> bool:
     return False
 
 
-def _remove_document_files(kb: KnowledgeBase) -> None:
+def remove_document_files(kb: KnowledgeBase) -> None:
     """清理旧知识库的上传文件，只删除应用配置目录下的文件。"""
     roots = [
         Path(settings.upload_dir).resolve(),
         Path(settings.paper_storage_dir).resolve(),
     ]
     for document in kb.documents:
+        shutil.rmtree(artifact_root(document.id), ignore_errors=True)
         path = Path(document.file_path).resolve()
         if not any(path == root or root in path.parents for root in roots):
             continue
@@ -54,7 +58,8 @@ def cleanup_stale_knowledge_bases() -> int:
                 if _is_current_model(kb.embedding_model, current_model):
                     continue
                 vector_store.delete_collection(kb.id)
-                _remove_document_files(kb)
+                keyword_store.delete_kb(kb.id, db)
+                remove_document_files(kb)
                 db.delete(kb)
                 removed += 1
             if removed:
@@ -63,3 +68,16 @@ def cleanup_stale_knowledge_bases() -> int:
         # 源码开发模式可能尚未执行 alembic；让服务先启动，迁移后下次启动再清理。
         return 0
     return removed
+
+
+def recover_interrupted_documents() -> int:
+    """An in-process background job cannot survive restart; make it retryable."""
+    from app.db.models import Document
+    with SessionLocal() as db:
+        docs = list(db.scalars(select(Document).where(Document.status == "pending")).all())
+        for doc in docs:
+            doc.status = "failed"
+            doc.error = "服务重启中断了文档处理，可以重试"
+            doc.processing_stage = "interrupted"
+        db.commit()
+        return len(docs)

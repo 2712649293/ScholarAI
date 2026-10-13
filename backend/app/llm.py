@@ -7,6 +7,7 @@ from typing import Any
 
 import openai
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -30,7 +31,7 @@ def get_llm() -> ChatOpenAI:
     """单例 ChatModel。DeepSeek 兼容 OpenAI 接口，直接用 ChatOpenAI。"""
     return ChatOpenAI(
         model=settings.llm_model,
-        api_key=settings.llm_api_key,
+        api_key=SecretStr(settings.llm_api_key),
         base_url=settings.llm_base_url,
         temperature=0.3,
         timeout=settings.llm_timeout_seconds,
@@ -53,7 +54,7 @@ async def call_llm(messages: list[Any], *, timeout: float | None = None) -> str:
         result = await asyncio.wait_for(
             llm.ainvoke(messages, config={"callbacks": [HANDLER]}), timeout=t
         )
-        return result.content if hasattr(result, "content") else str(result)
+        return result.text
     except asyncio.TimeoutError as e:
         raise LLMTimeout(f"LLM 调用超时（{t}s）") from e
     except openai.RateLimitError as e:

@@ -16,8 +16,10 @@ async function handle<T>(res: Response): Promise<T> {
     let message = `HTTP ${res.status}`
     try {
       const body = (await res.json()) as { code?: string; message?: string; detail?: unknown }
-      code = body.code
-      message = body.message ?? message
+      const detail = typeof body.detail === 'object' && body.detail !== null && !Array.isArray(body.detail)
+        ? body.detail as { code?: string; message?: string } : undefined
+      code = body.code ?? detail?.code
+      message = body.message ?? detail?.message ?? (typeof body.detail === 'string' ? body.detail : message)
     } catch {
       // ignore parse error
     }
@@ -74,6 +76,11 @@ export interface Citation {
   chunk_index: number
   text: string
   score: number
+  page_end?: number | null
+  section?: string
+  figure_ids?: string[]
+  chunk_id?: string
+  rerank_score?: number | null
 }
 
 export interface ChatResponse {
@@ -109,6 +116,8 @@ export interface Doc {
   page_count: number
   status: 'pending' | 'indexed' | 'failed'
   error?: string | null
+  processing_stage?: string
+  warnings?: string[]
   created_at: string
   indexed_at?: string | null
 }
@@ -119,6 +128,19 @@ export interface SearchHit {
   page: number
   chunk_index: number
   score: number
+  page_end?: number | null
+  section?: string
+  figure_ids?: string[]
+  rerank_score?: number | null
+  retrieval_warnings?: string[]
+}
+
+export function retryDoc(kbId: string, docId: string): Promise<Doc> {
+  return postJson<Doc>(`/api/knowledge/${kbId}/docs/${docId}/retry`, {})
+}
+
+export function deleteDoc(kbId: string, docId: string): Promise<void> {
+  return deleteJson(`/api/knowledge/${kbId}/docs/${docId}`)
 }
 
 export function listKBs(): Promise<KB[]> {
@@ -209,6 +231,7 @@ export interface ResearchPaper {
 }
 
 export interface ResearchFinal {
+  message_id?: string | null
   session_id: string
   report_markdown: string
   report_path: string
@@ -223,43 +246,61 @@ export interface ResearchBody {
   max_papers?: number
 }
 
-// 浏览器原生 EventSource 只支持 GET；研究接口是 POST+body，自己用 fetch 解析 SSE。
-// 返回一个取消函数（组件卸载 / 用户中止时调用）。
-export function researchStream(
-  body: ResearchBody,
+// POST SSE 共用解析器，支持分块 UTF-8、CRLF 与多行 data；主动取消静默结束。
+function postSSE(
+  path: string, body: unknown,
   onEvent: (event: string, data: unknown) => void,
+  method: 'GET' | 'POST' = 'POST',
 ): () => void {
   const ctrl = new AbortController()
   ;(async () => {
-    const res = await fetch('/api/research/stream', {
-      method: 'POST',
+    const res = await fetch(path, {
+      method,
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
+      body: JSON.stringify(body), signal: ctrl.signal,
     })
-    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
+    if (!res.ok) await handle(res)
+    if (!res.body) throw new Error('SSE 响应为空')
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
-    let buf = ''
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const raw = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        let event = 'message'
-        let data = ''
-        for (const line of raw.split('\n')) {
-          if (line.startsWith('event:')) event = line.slice(6).trim()
-          else if (line.startsWith('data:')) data += line.slice(5).trim()
+    let buffer = ''
+    let completed = false
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true })
+        buffer = buffer.replace(/\r\n/g, '\n')
+        let end: number
+        while ((end = buffer.indexOf('\n\n')) !== -1) {
+          const raw = buffer.slice(0, end)
+          buffer = buffer.slice(end + 2)
+          let event = 'message'
+          const lines: string[] = []
+          for (const line of raw.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim()
+            else if (line.startsWith('data:')) lines.push(line.slice(5).replace(/^ /, ''))
+          }
+          if (lines.length && !ctrl.signal.aborted) {
+            if (['final', 'complete', 'confirmed', 'error'].includes(event)) completed = true
+            onEvent(event, JSON.parse(lines.join('\n')))
+          }
         }
-        if (data) onEvent(event, JSON.parse(data))
+        if (done) break
       }
+      if (!completed && !ctrl.signal.aborted) throw new Error('SSE 连接提前结束，请重试')
+    } finally {
+      reader.releaseLock()
     }
-  })().catch((err) => onEvent('error', { message: String(err) }))
+  })().catch((err) => {
+    if (!ctrl.signal.aborted) onEvent('error', { message: err instanceof Error ? err.message : String(err) })
+  })
   return () => ctrl.abort()
+}
+
+export function researchStream(
+  body: ResearchBody, onEvent: (event: string, data: unknown) => void,
+): () => void {
+  return postSSE('/api/research/stream', body, onEvent)
 }
 
 // === Plan（M5.5：用户可审可改的研究计划）===
@@ -288,13 +329,17 @@ export interface ResearchPlan {
   reasoning: string
 }
 
-export type PlanStatus = 'pending' | 'edited' | 'approved' | 'rejected' | 'none'
+export type PlanStatus = 'pending' | 'edited' | 'approved' | 'rejected' | 'none' | 'clarifying'
 
 export interface PlanResponse {
   session_id: string
   plan: ResearchPlan | null
   plan_status: PlanStatus
   plan_generated_at: string | null
+  execution_status?: 'idle' | 'running' | 'done' | 'failed' | 'interrupted'
+  execution_steps?: string[]
+  execution_error?: string | null
+  can_resume?: boolean
 }
 
 export function getPlan(sessionId: string): Promise<PlanResponse> {
@@ -323,47 +368,12 @@ export function rejectPlan(sessionId: string): Promise<PlanResponse> {
   return postJson<PlanResponse>(`/api/research/${sessionId}/plan/reject`, {})
 }
 
-// approvePlan 走 SSE（SSE 推到 step + final），复用 researchStream 的 SSE 解析器。
-// 区别：endpoint 是 /api/research/{sid}/plan/approve，body 不需要 query（state 已有）。
 export function approvePlanStream(
-  sessionId: string,
-  editedPlan: ResearchPlan | null,
+  sessionId: string, editedPlan: ResearchPlan | null,
   onEvent: (event: string, data: unknown) => void,
 ): () => void {
-  const ctrl = new AbortController()
-  ;(async () => {
-    const res = await fetch(`/api/research/${sessionId}/plan/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify(editedPlan ? { edited_plan: editedPlan } : {}),
-      signal: ctrl.signal,
-    })
-    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const raw = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        let event = 'message'
-        let data = ''
-        for (const line of raw.split('\n')) {
-          if (line.startsWith('event:')) event = line.slice(6).trim()
-          else if (line.startsWith('data:')) data += line.slice(5).trim()
-        }
-        if (data) onEvent(event, JSON.parse(data))
-      }
-    }
-  })().catch((err) => onEvent('error', { message: String(err) }))
-  return () => ctrl.abort()
+  return postSSE(`/api/research/${sessionId}/plan/approve`, editedPlan ? { edited_plan: editedPlan } : {}, onEvent)
 }
-
-// === M5.6 · Clarify 阶段 ===
 
 export interface ClarifyConfirmed {
   session_id: string
@@ -371,102 +381,33 @@ export interface ClarifyConfirmed {
   plan_status: 'pending'
 }
 
-/** 首次启动澄清对话。SSE 推 message/step/confirmed。 */
 export function clarifyStream(
   body: { query: string; session_id?: string },
   onEvent: (event: string, data: unknown) => void,
 ): () => void {
-  const ctrl = new AbortController()
-  ;(async () => {
-    const res = await fetch('/api/research/clarify/stream', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify(body), signal: ctrl.signal,
-    })
-    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
-    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = ''
-    for (;;) {
-      const { value, done } = await reader.read(); if (done) break
-      buf += decoder.decode(value, { stream: true }); let idx: number
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const raw = buf.slice(0, idx); buf = buf.slice(idx + 2); let event = 'message'; let data = ''
-        for (const line of raw.split('\n')) {
-          if (line.startsWith('event:')) event = line.slice(6).trim()
-          else if (line.startsWith('data:')) data += line.slice(5).trim()
-        }
-        if (data) onEvent(event, JSON.parse(data))
-      }
-    }
-  })().catch((err) => onEvent('error', { message: String(err) }))
-  return () => ctrl.abort()
+  return postSSE('/api/research/clarify/stream', body, onEvent)
 }
 
-/** 澄清阶段用户回复。SSE 协议同 clarifyStream。 */
 export function clarifyContinueStream(
-  sessionId: string, query: string,
-  onEvent: (event: string, data: unknown) => void,
+  sessionId: string, query: string, onEvent: (event: string, data: unknown) => void,
 ): () => void {
-  const pw = (p: string, b: unknown, e: typeof onEvent) => {
-    const c = new AbortController()
-    ;(async () => {
-      const r = await fetch(p, { method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify(b), signal: c.signal })
-      if (!r.ok || !r.body) throw new Error(`SSE ${r.status}`)
-      const rd = r.body.getReader(); const d = new TextDecoder(); let bf = ''
-      for (;;) {
-        const { value, done } = await rd.read(); if (done) break
-        bf += d.decode(value, { stream: true }); let ix: number
-        while ((ix = bf.indexOf('\n\n')) !== -1) {
-          const raw = bf.slice(0, ix); bf = bf.slice(ix + 2); let ev = 'message'; let dt = ''
-          for (const ln of raw.split('\n')) {
-            if (ln.startsWith('event:')) ev = ln.slice(6).trim()
-            else if (ln.startsWith('data:')) dt += ln.slice(5).trim()
-          }
-          if (dt) e(ev, JSON.parse(dt))
-        }
-      }
-    })().catch((err) => e('error', { message: String(err) }))
-    return () => c.abort()
-  }
-  return pw(`/api/research/${sessionId}/clarify/continue`, { query }, onEvent)
+  return postSSE(`/api/research/${sessionId}/clarify/continue`, { query }, onEvent)
 }
 
-// M5.5.6 · 追问：已 approved plan 后续问问题时跳过 planner，直接进 researcher。
-// 协议与 approvePlanStream 完全一致（step + final + :done），body 改传 query。
 export function continueResearchStream(
-  sessionId: string,
-  query: string,
-  onEvent: (event: string, data: unknown) => void,
+  sessionId: string, query: string, onEvent: (event: string, data: unknown) => void,
 ): () => void {
-  const ctrl = new AbortController()
-  ;(async () => {
-    const res = await fetch(`/api/research/${sessionId}/continue/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify({ query }),
-      signal: ctrl.signal,
-    })
-    if (!res.ok || !res.body) throw new Error(`SSE 连接失败: ${res.status}`)
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const raw = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        let event = 'message'
-        let data = ''
-        for (const line of raw.split('\n')) {
-          if (line.startsWith('event:')) event = line.slice(6).trim()
-          else if (line.startsWith('data:')) data += line.slice(5).trim()
-        }
-        if (data) onEvent(event, JSON.parse(data))
-      }
-    }
-  })().catch((err) => onEvent('error', { message: String(err) }))
-  return () => ctrl.abort()
+  return postSSE(`/api/research/${sessionId}/continue/stream`, { query }, onEvent)
+}
+
+export function researchEvents(
+  sessionId: string, onEvent: (event: string, data: unknown) => void,
+): () => void {
+  return postSSE(`/api/research/${sessionId}/events`, undefined, onEvent, 'GET')
+}
+
+export function resumeResearchStream(
+  sessionId: string, onEvent: (event: string, data: unknown) => void,
+): () => void {
+  return postSSE(`/api/research/${sessionId}/resume/stream`, {}, onEvent)
 }

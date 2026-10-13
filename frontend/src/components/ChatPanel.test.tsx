@@ -1,16 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ChatPanel } from './ChatPanel'
 import {
   chatQA,
   getSession,
+  getPlan,
   startPlan,
   approvePlanStream,
   clarifyStream,
   clarifyContinueStream,
   continueResearchStream,
+  researchEvents,
+  resumeResearchStream,
   rejectPlan,
   updatePlan,
 } from '@/lib/api'
@@ -19,6 +22,7 @@ vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
   listKBs: vi.fn().mockResolvedValue([]),
   getSession: vi.fn().mockResolvedValue({ messages: [] }),
+  getPlan: vi.fn().mockResolvedValue({ plan: null, plan_status: 'none' }),
   // M5.6 clarify 阶段
   clarifyStream: vi.fn(),
   clarifyContinueStream: vi.fn(),
@@ -29,6 +33,8 @@ vi.mock('@/lib/api', () => ({
   updatePlan: vi.fn(),
   // M5.5.6 追问
   continueResearchStream: vi.fn(),
+  researchEvents: vi.fn(),
+  resumeResearchStream: vi.fn(),
   ApiError: class extends Error {},
 }))
 
@@ -50,8 +56,36 @@ describe('ChatPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getSession).mockResolvedValue({ messages: [] } as never)
+    vi.mocked(getPlan).mockResolvedValue({ plan: null, plan_status: 'none' } as never)
     // M5.6: default clarify mock — do nothing (tests that need clarify flow set it up)
     // vi.fn() default: returns undefined, no events fired
+  })
+  it('loads an existing session on the initial route and restores its pending plan', async () => {
+    vi.mocked(getSession).mockResolvedValue({ mode: 'research', messages: [{ role: 'user', content: '保存的问题' }, { role: 'assistant', content: '澄清回复' }] } as never)
+    vi.mocked(getPlan).mockResolvedValue({ plan_status: 'pending', plan: { title: '恢复的计划', sub_questions: [], search_queries: [], outline: [], estimated_papers: 5, reasoning: '' } } as never)
+    render(<MemoryRouter initialEntries={['/chat/saved']}><Routes><Route path="/chat/:sessionId" element={<ChatPanel />} /></Routes></MemoryRouter>)
+    await screen.findByText('保存的问题')
+    await screen.findByRole('button', { name: /批准并开始/ })
+    expect(getSession).toHaveBeenCalledWith('saved')
+    expect(getPlan).toHaveBeenCalledWith('saved')
+    expect(continueResearchStream).not.toHaveBeenCalled()
+  })
+
+  it('resumes clarification after a reload and waits for round completion', async () => {
+    vi.mocked(getSession).mockResolvedValue({ mode: 'research', messages: [{ role: 'user', content: '研究RAG' }] } as never)
+    vi.mocked(getPlan).mockResolvedValue({ plan_status: 'clarifying', plan: null } as never)
+    let emit: ((event: string, data: unknown) => void) | undefined
+    vi.mocked(clarifyContinueStream).mockImplementation((_sid, _q, callback) => { emit = callback; return () => {} })
+    render(<MemoryRouter initialEntries={['/chat/clarifying']}><Routes><Route path="/chat/:sessionId" element={<ChatPanel />} /></Routes></MemoryRouter>)
+    await screen.findByText('研究RAG')
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText('输入研究方向…'), '近五年{Enter}')
+    expect(clarifyContinueStream).toHaveBeenCalledWith('clarifying', '近五年', expect.any(Function))
+    emit!('message', { content: '确认范围' })
+    await screen.findByText('确认范围')
+    expect(screen.getByPlaceholderText('输入研究方向…')).toBeDisabled()
+    emit!('complete', {})
+    await waitFor(() => expect(screen.getByPlaceholderText('输入研究方向…')).not.toBeDisabled())
   })
   it('disables send button when input is empty', () => {
     renderPanel()
@@ -615,7 +649,8 @@ describe('ChatPanel', () => {
     })
   })
 
-  it('M5.5.7: 批准 SSE 失败时 plan 回滚到 pending，按钮恢复可点', async () => {
+  it('审批尚未成功时连接失败，按服务端状态恢复 pending', async () => {
+    vi.mocked(getPlan).mockResolvedValue({ plan_status: 'pending' } as never)
     vi.mocked(startPlan).mockResolvedValue({
       session_id: 'sess-fail',
       plan: {
@@ -652,4 +687,119 @@ describe('ChatPanel', () => {
     // hasApprovedPlan reset false（后续追问不会走 runFollowup 路径）
     expect(screen.getByRole('button', { name: '发送' })).toBeDisabled()
   })
+
+  const savedPlan = { title: '已批准的计划', sub_questions: [], search_queries: [], outline: [], estimated_papers: 5, reasoning: '' }
+
+  it('切走仅取消订阅，切回自动重连且旧回调不会污染其他会话', async () => {
+    vi.mocked(getSession).mockImplementation(async (sid) => ({
+      mode: sid === 'research' ? 'research' : 'qa', status: sid === 'research' ? 'running' : 'idle',
+      messages: [{ id: sid, role: 'user', content: sid === 'research' ? '研究方向' : '普通会话' }],
+    }) as never)
+    vi.mocked(getPlan).mockResolvedValue({ plan_status: 'approved', plan: savedPlan, execution_status: 'running' } as never)
+    const abort = vi.fn()
+    const callbacks: ((event: string, data: unknown) => void)[] = []
+    vi.mocked(researchEvents).mockImplementation((_sid, callback) => { callbacks.push(callback); return abort })
+    render(<MemoryRouter initialEntries={['/chat/research']}>
+      <Link to="/chat/other">其他对话</Link><Link to="/chat/research">返回研究</Link>
+      <Routes><Route path="/chat/:sessionId" element={<ChatPanel />} /></Routes>
+    </MemoryRouter>)
+    await screen.findByText(/主 agent 规划中/)
+    act(() => callbacks[0]('step', { node: 'search_arxiv' }))
+    await screen.findByText(/检索 arxiv/)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('其他对话'))
+    await screen.findByText('普通会话')
+    expect(abort).toHaveBeenCalledOnce()
+    act(() => callbacks[0]('final', { report_markdown: '过期回调报告' }))
+    expect(screen.queryByText('过期回调报告')).not.toBeInTheDocument()
+    await user.click(screen.getByText('返回研究'))
+    await waitFor(() => expect(researchEvents).toHaveBeenCalledTimes(2))
+    act(() => {
+      callbacks[1]('step', { node: 'search_arxiv' })
+      callbacks[1]('step', { node: 'download_papers' })
+    })
+    await screen.findByText(/下载 PDF/)
+    expect(approvePlanStream).not.toHaveBeenCalled()
+    act(() => callbacks[1]('final', { message_id: 'report', report_markdown: '# 完整报告' }))
+    await screen.findByText('完整报告')
+  })
+
+  it('已中断研究保留批准状态，点击恢复才继续，并按消息 ID 去重', async () => {
+    vi.mocked(getSession).mockResolvedValue({ mode: 'research', status: 'failed', messages: [
+      { id: 'old', role: 'assistant', content: '重复正文' },
+    ] } as never)
+    vi.mocked(getPlan).mockResolvedValue({ plan_status: 'approved', plan: savedPlan,
+      execution_status: 'failed', execution_error: '研究已中断', can_resume: true } as never)
+    let emit: (event: string, data: unknown) => void
+    vi.mocked(resumeResearchStream).mockImplementation((_sid, callback) => { emit = callback; return () => {} })
+    render(<MemoryRouter initialEntries={['/chat/interrupted']}><Routes>
+      <Route path="/chat/:sessionId" element={<ChatPanel />} />
+    </Routes></MemoryRouter>)
+    const resume = await screen.findByRole('button', { name: '继续未完成的研究' })
+    expect(screen.getByText(/已批准$/)).toBeInTheDocument()
+    expect(resumeResearchStream).not.toHaveBeenCalled()
+    const user = userEvent.setup()
+    await user.click(resume)
+    expect(resumeResearchStream).toHaveBeenCalledWith('interrupted', expect.any(Function))
+    act(() => emit('final', { message_id: 'new', report_markdown: '重复正文' }))
+    await waitFor(() => expect(screen.getAllByText('重复正文')).toHaveLength(2))
+    act(() => emit('final', { message_id: 'new', report_markdown: '重复正文' }))
+    expect(screen.getAllByText('重复正文')).toHaveLength(2)
+    expect(approvePlanStream).not.toHaveBeenCalled()
+  })
+
+  it('连接报错后服务端已批准，保持 approved 并显示恢复按钮', async () => {
+    vi.mocked(getSession).mockResolvedValue({ mode: 'research', status: 'running', messages: [] } as never)
+    vi.mocked(getPlan).mockResolvedValueOnce({ plan_status: 'approved', plan: savedPlan, execution_status: 'running' } as never)
+      .mockResolvedValue({ plan_status: 'approved', plan: savedPlan, execution_status: 'failed', can_resume: true } as never)
+    let emit: (event: string, data: unknown) => void
+    vi.mocked(researchEvents).mockImplementation((_sid, callback) => { emit = callback; return () => {} })
+    render(<MemoryRouter initialEntries={['/chat/failed']}><Routes>
+      <Route path="/chat/:sessionId" element={<ChatPanel />} />
+    </Routes></MemoryRouter>)
+    await screen.findByText(/主 agent 规划中/)
+    act(() => emit('error', { message: '执行异常' }))
+    await screen.findByRole('button', { name: '继续未完成的研究' })
+    expect(screen.queryByRole('button', { name: /批准并开始/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/已批准$/)).toBeInTheDocument()
+  })
+
+
+  it('历史加载期间研究完成，重放最终消息不会重复显示', async () => {
+    vi.mocked(getSession).mockResolvedValue({ mode: 'research', status: 'running', messages: [
+      { id: 'saved-report', role: 'assistant', content: '# 已落库报告' },
+    ] } as never)
+    vi.mocked(getPlan).mockResolvedValue({ plan_status: 'approved', plan: savedPlan, execution_status: 'done' } as never)
+    vi.mocked(researchEvents).mockImplementation((_sid, callback) => {
+      callback('final', { message_id: 'saved-report', report_markdown: '# 已落库报告' })
+      return () => {}
+    })
+    render(<MemoryRouter initialEntries={['/chat/race']}><Routes>
+      <Route path="/chat/:sessionId" element={<ChatPanel />} />
+    </Routes></MemoryRouter>)
+    await screen.findByText('已落库报告')
+    expect(screen.getAllByText('已落库报告')).toHaveLength(1)
+    expect(researchEvents).toHaveBeenCalledOnce()
+  })
+
+
+  it('连接丢失后后台已完成，从历史恢复报告', async () => {
+    vi.mocked(getSession).mockResolvedValueOnce({ mode: 'research', status: 'running', messages: [] } as never)
+      .mockResolvedValue({ mode: 'research', status: 'done', messages: [
+        { id: 'result', role: 'assistant', content: '# 后台完成的报告' },
+      ] } as never)
+    vi.mocked(getPlan).mockResolvedValueOnce({ plan_status: 'approved', plan: savedPlan, execution_status: 'running' } as never)
+      .mockResolvedValue({ plan_status: 'approved', plan: savedPlan, execution_status: 'done' } as never)
+    let emit: (event: string, data: unknown) => void
+    vi.mocked(researchEvents).mockImplementation((_sid, callback) => { emit = callback; return () => {} })
+    render(<MemoryRouter initialEntries={['/chat/done']}><Routes>
+      <Route path="/chat/:sessionId" element={<ChatPanel />} />
+    </Routes></MemoryRouter>)
+    await screen.findByText(/主 agent 规划中/)
+    act(() => emit('error', { message: '连接断开' }))
+    await screen.findByText('后台完成的报告')
+    expect(screen.queryByText(/连接断开/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重新连接研究进度' })).not.toBeInTheDocument()
+  })
+
 })

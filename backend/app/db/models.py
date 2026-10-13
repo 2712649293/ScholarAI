@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DDL, DateTime, ForeignKey, Integer, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -77,10 +77,47 @@ class Document(Base):
     page_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|indexed|failed
     error: Mapped[str | None] = mapped_column(Text, default=None)
+    processing_stage: Mapped[str] = mapped_column(String(32), default="pending", server_default="pending")
+    warnings: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     kb: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+
+
+class RAGGeneration(Base):
+    """Publication pointer. Both indexes are written before this is switched."""
+    __tablename__ = "rag_generations"
+    doc_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kb_id: Mapped[str] = mapped_column(String(64), index=True)
+    generation: Mapped[str] = mapped_column(String(32))
+    fingerprint: Mapped[str] = mapped_column(Text)
+
+
+class RAGChunk(Base):
+    __tablename__ = "rag_chunks"
+    chunk_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String(64), index=True)
+    kb_id: Mapped[str] = mapped_column(String(64), index=True)
+    generation: Mapped[str] = mapped_column(String(32), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    terms: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[str] = mapped_column(Text)
+
+
+# Keep FTS in the same SQLite transaction as canonical chunks, including deletes.
+FTS_DDL = [
+    "CREATE VIRTUAL TABLE IF NOT EXISTS rag_fts USING fts5(chunk_id UNINDEXED, terms)",
+    "CREATE TRIGGER IF NOT EXISTS rag_chunks_ai AFTER INSERT ON rag_chunks BEGIN "
+    "INSERT INTO rag_fts(chunk_id, terms) VALUES (new.chunk_id, new.terms); END",
+    "CREATE TRIGGER IF NOT EXISTS rag_chunks_ad AFTER DELETE ON rag_chunks BEGIN "
+    "DELETE FROM rag_fts WHERE chunk_id = old.chunk_id; END",
+    "CREATE TRIGGER IF NOT EXISTS rag_chunks_au AFTER UPDATE ON rag_chunks BEGIN "
+    "DELETE FROM rag_fts WHERE chunk_id = old.chunk_id; "
+    "INSERT INTO rag_fts(chunk_id, terms) VALUES (new.chunk_id, new.terms); END",
+]
+for ddl in FTS_DDL:
+    event.listen(RAGChunk.__table__, "after_create", DDL(ddl).execute_if(dialect="sqlite"))
 
 
 # M4.5.1: research_states 表已删——workflow 状态由 langgraph checkpointer 持久化（thread_id=session_id）。

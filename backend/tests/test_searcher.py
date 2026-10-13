@@ -5,6 +5,7 @@ mock `_search_one` 验证 searcher 的容错行为（不真跑 arxiv API）。
 from __future__ import annotations
 
 import asyncio
+import re
 from unittest.mock import patch
 
 import pytest
@@ -29,7 +30,7 @@ def test_searcher_returns_papers_on_success():
 
     def fake_search(q: str, per: int):
         # 每个 query 返 3 篇
-        return [_make_hit(i) for i in range(int(q.split("idx=")[-1]) * 10, int(q.split("idx=")[-1]) * 10 + 3)]
+        return [_make_hit(i) for i in range(int(re.search(r"idx=(\d+)", q).group(1)) * 10, int(re.search(r"idx=(\d+)", q).group(1)) * 10 + 3)]
 
     async def main():
         with patch.object(searcher, "_search_one", side_effect=fake_search):

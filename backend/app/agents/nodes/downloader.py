@@ -19,7 +19,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.agents.state import ResearchState
+from app.agents.state import ResearchContext
 from app.config import settings
 
 MAX_CONCURRENT = 5
@@ -61,7 +61,7 @@ async def _download_one(
     return {**paper, "local_path": str(path)}, True
 
 
-async def run(state: ResearchState) -> ResearchState:
+async def run(state: ResearchContext) -> ResearchContext:
     papers = state.get("papers", [])
     if not papers:
         return {"papers": [], "download_failures": []}

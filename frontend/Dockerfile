@@ -1,6 +1,6 @@
 # 前端 Dockerfile：多阶段，nginx 提供静态文件 + 反代 /api 到 backend。
 #
-# ponytail: nginx 反代配置见 deploy/nginx.conf
+# nginx 反代配置见 frontend/nginx.conf，运行说明见 deploy/README.md。
 
 # === build ===
 FROM node:20-alpine AS builder
@@ -21,6 +21,6 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
-# 健康检查（用 livenessProbe 路径，但 frontend 没有，落在 nginx 默认）
+# 检查 nginx 是否能提供前端首页。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -q -O- http://localhost/ >/dev/null || exit 1

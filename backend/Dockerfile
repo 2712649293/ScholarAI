@@ -1,8 +1,8 @@
 # 后端 Dockerfile：多阶段构建。
 #
-# ponytail: 关键设计：
-# 1. 镜像自包含 BGE embedding 模型（独立预下载阶段，runtime 强制 HF 离线不联网）
-# 2. 单 worker（嵌入式 Chroma 多进程写同一目录会冲突，扩展见 docs/§12.10）
+# 关键设计（部署说明见 deploy/README.md）：
+# 1. 预下载 BGE，运行时离线加载 Hugging Face 模型；外部服务仍需网络
+# 2. 单 worker（嵌入式 Chroma 与 SQLite 检查点）
 # 3. 非 root 用户跑
 
 # === 阶段 1: 装依赖到 wheel ===
@@ -25,13 +25,15 @@ RUN uv export --no-hashes --no-dev -o /tmp/requirements.txt && \
 # runtime 的 SentenceTransformer 离线时按 ~/.cache/huggingface/hub 查找
 FROM python:3.11-slim AS model-loader
 
-RUN pip install --no-cache-dir huggingface_hub
+RUN pip install --no-cache-dir huggingface_hub tiktoken
+ENV TIKTOKEN_CACHE_DIR=/tokenizers
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
-# 此阶段必须能联网（HF 默认源）。离线环境可设 HF_ENDPOINT=https://hf-mirror.com
+# 此阶段必须能访问 Hugging Face；使用镜像源需在此构建阶段显式设置 HF_ENDPOINT。
 ARG BGE_MODEL=BAAI/bge-small-zh-v1.5
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('${BGE_MODEL}', cache_dir='/models')"
 
-# === 阶段 3: runtime（无网络）===
+# === 阶段 3: runtime（Hugging Face 模型离线加载）===
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -43,6 +45,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 # 预下载的模型 → appuser 默认 HF 缓存目录（~/.cache/huggingface/hub；app 未显式传 cache_directory）
 # 必须在 /root 之外：runtime 以 appuser 运行，读不了 /root
 COPY --from=model-loader /models /home/appuser/.cache/huggingface/hub
+COPY --from=model-loader /tokenizers /home/appuser/.cache/tiktoken
 
 COPY app ./app
 COPY alembic.ini entrypoint.sh ./
@@ -54,12 +57,12 @@ USER appuser
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HUB_OFFLINE=1 \
+    TIKTOKEN_CACHE_DIR=/home/appuser/.cache/tiktoken \
     TRANSFORMERS_OFFLINE=1
 
 EXPOSE 8000
 
-# ponytail: 不加 --workers！嵌入式 Chroma 多进程写同一目录会冲突
-#   扩展到多 worker 时切换 Chroma 为 HttpClient（client-server 模式），见 §12.10
+# 单 worker；扩展前需调整 Chroma、检查点与任务执行方式，见 deploy/README.md。
 # entrypoint 先 alembic upgrade head（空 data 卷时建表），再 exec 原命令
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

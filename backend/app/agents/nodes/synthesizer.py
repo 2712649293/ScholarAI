@@ -1,9 +1,10 @@
 """Synthesizer：纯函数，读 state dict 返回更新 dict（不关心 langgraph，工具包 Command）。"""
 from __future__ import annotations
 
+import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.agents.state import ResearchState
+from app.agents.state import ResearchContext
 from app.llm import call_llm
 
 SYSTEM = (
@@ -31,7 +32,7 @@ def _format_papers(papers: list[dict], analyses: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-async def run(state: ResearchState) -> dict:
+async def run(state: ResearchContext) -> dict:
     """返回 state 更新 dict（不含 messages，由工具加 ToolMessage）。"""
     iteration = state.get("iteration", 0) + 1
     papers = state.get("papers", [])
@@ -45,6 +46,8 @@ async def run(state: ResearchState) -> dict:
         + "\n".join(f"- {q}" for q in state.get("sub_questions", []))
         + f"\n\n论文资料（共 {len(papers)} 篇）：\n{context}"
     )
+    if state.get("plan"):
+        user += "\n\n用户已批准的研究计划（请严格遵守主题与章节大纲）：\n" + json.dumps(state["plan"], ensure_ascii=False)
     # M5.5.11: 传下载成功/失败论文列表，让 LLM 在综述末尾列出
     failures = state.get("download_failures", [])
     downloaded = [p for p in papers if p.get("local_path")]

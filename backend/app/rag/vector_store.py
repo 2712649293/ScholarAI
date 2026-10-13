@@ -4,6 +4,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 import chromadb
+from chromadb.api.models.Collection import Collection
 
 from app.config import settings
 
@@ -14,7 +15,7 @@ def get_client() -> chromadb.api.ClientAPI:
     return chromadb.PersistentClient(path=settings.chroma_persist_dir)
 
 
-def get_or_create_collection(kb_id: str) -> chromadb.api.models.Collection:
+def get_or_create_collection(kb_id: str) -> Collection:
     """每个 KB 一个 collection，cosine 距离。"""
     return get_client().get_or_create_collection(
         name=kb_id, metadata={"hnsw:space": "cosine"}
@@ -32,6 +33,6 @@ def delete_collection(kb_id: str) -> None:
 def collection_count(kb_id: str) -> int:
     """collection 中向量数。collection 不存在返回 0。"""
     try:
-        return get_or_create_collection(kb_id).count()
+        return int(get_or_create_collection(kb_id).count())
     except Exception:
         return 0

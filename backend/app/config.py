@@ -40,6 +40,28 @@ class Settings(BaseSettings):
     bge_model: str = "BAAI/bge-small-zh-v1.5"
     bge_device: str = "cpu"
 
+    # RAG: optional services are independent of the ordinary chat model.
+    vision_base_url: str = ""
+    vision_model: str = "gpt-6.1-sol"
+    vision_api_key: str = ""
+    vision_api_style: str = "responses"
+    vision_timeout_seconds: float = Field(default=45, gt=0)
+    vision_document_budget_seconds: float = Field(default=180, gt=0)
+    vision_max_concurrency: int = Field(default=2, ge=1, le=8)
+    vision_max_images_per_doc: int = Field(default=30, ge=0)
+    rerank_endpoint: str = ""
+    rerank_model: str = ""
+    rerank_api_key: str = ""
+    rerank_timeout_seconds: float = Field(default=15, gt=0)
+    retrieval_branch_limit: int = Field(default=30, ge=1, le=200)
+    rerank_candidate_limit: int = Field(default=40, ge=1, le=200)
+    rag_context_tokens: int = Field(default=4000, ge=512)
+    embedding_max_input_tokens: int = Field(default=512, ge=64)
+    chunk_min_tokens: int = Field(default=120, ge=1)
+    chunk_target_tokens: int = Field(default=300, ge=1)
+    chunk_max_tokens: int = Field(default=450, ge=32)
+    chunk_overlap_tokens: int = Field(default=60, ge=0)
+
     # Storage
     database_url: str = "sqlite:///./data/scholarai.db"
     paper_storage_dir: str = "./data/papers"

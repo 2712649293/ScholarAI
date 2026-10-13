@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class KBCreate(BaseModel):
@@ -29,10 +30,17 @@ class DocResponse(BaseModel):
     page_count: int
     status: Literal["pending", "indexed", "failed"]
     error: str | None = None
+    processing_stage: str = "pending"
+    warnings: list[str] = Field(default_factory=list)
     created_at: datetime
     indexed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def decode_warnings(cls, value: str | list[str]) -> list[str]:
+        return list(json.loads(value)) if isinstance(value, str) else value
 
 
 class SearchHit(BaseModel):
@@ -41,6 +49,13 @@ class SearchHit(BaseModel):
     page: int
     chunk_index: int
     score: float
+    chunk_id: str = ""
+    page_end: int | None = None
+    section: str = ""
+    figure_ids: list[str] = Field(default_factory=list)
+    source_spans: list[dict] = Field(default_factory=list)
+    rerank_score: float | None = None
+    retrieval_warnings: list[str] = Field(default_factory=list)
 
 
 class SearchRequest(BaseModel):

@@ -31,6 +31,7 @@ def make_tools() -> list:
                     "search_queries": queries,
                     "depth": state.get("depth", "normal"),
                     "max_papers": state.get("max_papers", 20),
+                    "clarify_direction": state.get("clarify_direction"),
                 }
             )
         except ArxivFetchFailed as e:
@@ -136,7 +137,7 @@ def make_tools() -> list:
                 }
             )
         # 用 instructions 作为本次 feedback；不修改 state.feedback（避免污染 review_report）
-        result = await synthesizer.run({**state, "feedback": instructions})
+        result = await synthesizer.run({**state, "feedback": instructions or state.get("feedback", "")})
         draft_text = result.get("draft", "")
         iteration = result.get("iteration", 0)
         action = "改写" if instructions else "生成"
@@ -163,6 +164,7 @@ def make_tools() -> list:
         return Command(
             update={
                 **result,  # draft + iteration
+                "feedback": "",
                 "messages": [_msg(runtime, body)],
             }
         )
@@ -185,7 +187,7 @@ def make_tools() -> list:
             {
                 "papers": state.get("papers", []),
                 "sub_questions": state.get("sub_questions", []),
-                "report_draft": state["draft"],
+                "draft": state["draft"],
             }
         )
         if out.get("passed"):

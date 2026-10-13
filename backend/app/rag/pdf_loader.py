@@ -25,13 +25,13 @@ def load_pdf(pdf_path: str | Path) -> list[PageText]:
                 text = page.extract_text() or ""
                 pages.append(PageText(page=i, text=text))
     except Exception as e:  # pdfplumber 解析失败时兜底到 pymupdf
+        pages.clear()  # 主解析器可能已读出部分页；兜底必须从空列表重新抽取。
         try:
             import pymupdf
-            doc = pymupdf.open(str(path))
-            for i, page in enumerate(doc, start=1):
-                text = page.get_text() or ""
-                pages.append(PageText(page=i, text=text))
-            doc.close()
+            with pymupdf.open(str(path)) as doc:
+                for i, page in enumerate(doc, start=1):
+                    text = page.get_text() or ""
+                    pages.append(PageText(page=i, text=text))
         except Exception as e2:
             raise RuntimeError(f"PDF 解析失败：{e}; 兜底也失败：{e2}") from e2
     return pages

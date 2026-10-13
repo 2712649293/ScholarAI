@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import arxiv
 from tenacity import (
@@ -16,7 +17,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.agents.state import ResearchState
+from app.agents.state import ResearchContext
 from app.errors import ArxivFetchFailed
 
 YEAR_MIN = 2018
@@ -36,8 +37,6 @@ def _search_one(query: str, max_results: int) -> list[dict]:
     out: list[dict] = []
     for r in client.results(search):
         year = r.published.year if r.published else 0
-        if year < YEAR_MIN:
-            continue
         out.append(
             {
                 "arxiv_id": r.get_short_id(),
@@ -69,23 +68,29 @@ async def _search_with_timeout(q: str, per: int) -> list[dict]:
     )
 
 
-async def run(state: ResearchState) -> ResearchState:
+async def run(state: ResearchContext) -> ResearchContext:
     queries = state.get("search_queries") or [state["query"]]
     per = PER_QUERY.get(state.get("depth", "normal"), 10)
     max_papers = state.get("max_papers", 20)
 
     merged: dict[str, dict] = {}
     errors = 0
+    direction = state.get("clarify_direction") or {}
+    year_start = direction.get("year_start", YEAR_MIN)
+    year_end = direction.get("year_end", datetime.now(timezone.utc).year)
     for q in queries:
         try:
-            hits = await _search_with_timeout(q, per)
+            bounded_query = f"({q}) AND submittedDate:[{year_start}01010000 TO {year_end}12312359]"
+            hits = await _search_with_timeout(bounded_query, per)
         except Exception:  # 单 query 失败不阻断（§8.3 降级，含 timeout + retry exhausted）
             errors += 1
             continue
         for h in hits:
+            if not year_start <= h["year"] <= year_end:
+                continue
             merged.setdefault(h["arxiv_id"], h)
 
-    if not merged and errors:  # 整轮全失败才抛错
+    if errors == len(queries):  # 仅所有请求失败才抛错；成功但无结果属于正常空集
         raise ArxivFetchFailed(
             "arxiv 检索全部失败",
             details={

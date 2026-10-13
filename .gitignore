@@ -40,3 +40,6 @@ uploads/
 # Coverage
 .coverage
 htmlcov/
+
+# Local, versioned development documents (never commit)
+/dev-docs/

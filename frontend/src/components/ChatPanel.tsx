@@ -8,7 +8,10 @@ import {
   clarifyStream,
   clarifyContinueStream,
   continueResearchStream,
+  researchEvents,
+  resumeResearchStream,
   getSession,
+  getPlan,
   listKBs,
   rejectPlan,
   startPlan,
@@ -27,6 +30,7 @@ type Mode = 'qa' | 'research'
 type Phase = 'idle' | 'clarifying' | 'planning' | 'executing'
 
 interface BaseMsg {
+  id?: string
   role: 'user' | 'assistant'
   content: string
   citations?: Citation[]
@@ -56,7 +60,8 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [sessionId, setSessionId] = useState<string | undefined>(routeSessionId)
+  const [recovery, setRecovery] = useState<'resume' | 'reconnect' | null>(null)
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined)
   const [mode, setMode] = useState<Mode>('qa')
   const [researchSteps, setResearchSteps] = useState<string[]>([])
 
@@ -66,7 +71,6 @@ export function ChatPanel() {
   // M5.5.6: 已 approved plan 后再发方向 → 走 runFollowup（跳 planner，直接进 researcher）。
   // ponytail：useState 异步批处理 + React 闭包拿快照——handleSubmit 在 setState 后
   // 同步读时可能拿到旧值。用 ref 同步存，state 留作渲染用。
-  const [hasApprovedPlan, setHasApprovedPlan] = useState(false)
   const hasApprovedPlanRef = useRef(false)
 
   // M_bug_sse_isolation + M5.5: 一套 sseAbortRef/sseRunIdRef 管 plan 和 execute 两条 SSE 流。
@@ -74,12 +78,13 @@ export function ChatPanel() {
   // - runId 闭包校验（防 abort 已发但客户端 reader 残留 event）
   const sseAbortRef = useRef<(() => void) | null>(null)
   const sseRunIdRef = useRef<number>(0)
+  const clarifyActiveRef = useRef(false)
 
   useEffect(() => {
     listKBs().then(setKBs).catch(() => setKBs([]))
   }, [])
 
-  // 路由切 session：abort 任何 in-flight 流 + runId 自增。
+  // Detach the view on navigation; research execution now belongs to the backend.
   useEffect(() => {
     return () => {
       sseAbortRef.current?.()
@@ -95,39 +100,54 @@ export function ChatPanel() {
       setMessages([])
       setResearchSteps([])
       setError(null)
+      setRecovery(null)
       setPhase('idle')
-      setHasApprovedPlan(false)
       hasApprovedPlanRef.current = false
       clarifyActiveRef.current = false
       return
     }
     if (routeSessionId === sessionId) return
+    let cancelled = false
     setSessionId(routeSessionId)
+    setMessages([])
+    setResearchSteps([])
+    setError(null)
+    setPhase('planning')
+    setRecovery(null)
+    hasApprovedPlanRef.current = false
     clarifyActiveRef.current = false
-    getSession(routeSessionId)
-      .then((s) => {
-        setMode(s.mode as Mode)
-        setMessages(
-          s.messages
-            .filter((m) => m.role === 'user' || m.role === 'assistant')
-            .map((m) => ({
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-              markdown: s.mode === 'research' && m.role === 'assistant',
-            })),
-        )
-        setResearchSteps([])
-        setError(null)
+    ;(async () => {
+      const session = await getSession(routeSessionId)
+      const plan = session.mode === 'research' ? await getPlan(routeSessionId) : null
+      if (cancelled) return
+      setMode(session.mode === 'research' ? 'research' : 'qa')
+      const history: Message[] = session.messages
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({
+          id: m.id, role: m.role as 'user' | 'assistant', content: m.content,
+          markdown: session.mode === 'research' && m.role === 'assistant',
+        }))
+      if (plan?.plan && ['pending', 'edited', 'approved'].includes(plan.plan_status)) {
+        history.push({ role: 'plan', plan: plan.plan, status: plan.plan_status as PlanMsg['status'] })
+      }
+      setMessages(history)
+      const approved = plan?.plan_status === 'approved'
+      hasApprovedPlanRef.current = approved
+      clarifyActiveRef.current = plan?.plan_status === 'clarifying'
+      if (plan?.execution_status === 'running' || (session.status === 'running' && plan?.execution_status === 'done')) {
+        observeResearch(routeSessionId, (onEvent) => researchEvents(routeSessionId, onEvent))
+      } else {
         setPhase('idle')
-        // M5.5.12: 页面刷新 / 切 session 回来后恢复 hasApprovedPlan。
-        // 研究模式 + 有 assistant 消息 → 视为已通过 plan（保守但安全；后端 /continue
-        // 还会校验 plan_status）。
-        if (s.mode === 'research' && s.messages.some((m) => m.role === 'assistant')) {
-          setHasApprovedPlan(true)
-          hasApprovedPlanRef.current = true
-        }
-      })
-      .catch(() => setMessages([]))
+        setError(plan?.execution_error ?? null)
+        setRecovery(plan?.can_resume ? 'resume' : null)
+      }
+    })().catch((err) => {
+      if (!cancelled) {
+        setError(err instanceof Error ? err.message : String(err))
+        setPhase('idle')
+      }
+    })
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeSessionId])
 
@@ -140,10 +160,8 @@ export function ChatPanel() {
     })
   }
 
-  const canSend = input.trim().length > 0 && phase === 'idle'
+  const canSend = input.trim().length > 0 && phase === 'idle' && recovery === null
 
-  // M5.6: 是否在 clarify 对话中（haven't confirmed yet）
-  const clarifyActiveRef = useRef(false)
 
   /** M5.6: 启动/继续澄清对话。先于 plan 流程。
    * - first call: clarifyStream → SSE message/confirmed 事件
@@ -171,16 +189,17 @@ export function ChatPanel() {
       } else if (event === 'message') {
         const { content } = data as { content: string }
         setMessages((m) => [...m, { role: 'assistant', content }])
-        setPhase('idle')
       } else if (event === 'step') {
         // agent called web_search — no visible change needed
       } else if (event === 'confirmed') {
         const cf = data as ClarifyConfirmed
         setSessionId(cf.session_id)
         clarifyActiveRef.current = false
+        setPhase('planning')
         // auto-trigger plan generation
         startPlan({ query: cf.clarify_direction.refined_query, session_id: cf.session_id })
           .then((resp) => {
+            if (runId !== sseRunIdRef.current) return
             setMessages((m) => [
               ...m,
               { role: 'plan', plan: resp.plan!, status: resp.plan_status as PlanMsg['status'] },
@@ -189,9 +208,12 @@ export function ChatPanel() {
             setPhase('idle')
           })
           .catch((err) => {
+            if (runId !== sseRunIdRef.current) return
             setError(err instanceof ApiError ? err.message : String(err))
             setPhase('idle')
           })
+      } else if (event === 'complete') {
+        if (clarifyActiveRef.current) setPhase('idle')
       } else if (event === 'error') {
         setError((data as { message?: string }).message ?? '澄清失败')
         setPhase('idle')
@@ -199,132 +221,78 @@ export function ChatPanel() {
     })
   }
 
-  /** M5.5: 启动 plan 流程。
-   *  - 调 POST /api/research/plan（一次性 fetch，< 5s）
-   *  - 成功 → plan 消息入流，phase=idle 让用户能继续打字
-   *  - 失败 → 错误提示，phase=idle
-   */
-  async function runPlan(query: string) {
-    setPhase('planning')
-    setError(null)
-    setHasApprovedPlan(false) // 新 plan 流程开始，旧 approved 状态清掉
-    hasApprovedPlanRef.current = false
-    try {
-      const resp = await startPlan({ query, session_id: sessionId })
-      setSessionId(resp.session_id)
-      setMessages((m) => [
-        ...m,
-        { role: 'plan', plan: resp.plan!, status: resp.plan_status as PlanMsg['status'] },
-      ])
-      if (!routeSessionId) navigate(`/chat/${resp.session_id}`)
-      setPhase('idle')
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
-      setPhase('idle')
-    }
-  }
-
-  /** M5.5.6: 追问 — 已 approved plan 后再发方向，跳过 planner，调 /continue/stream。
-   *  与 runExecute 几乎一样，只是 endpoint 不同、不再 map plan 状态、不传 edited_plan。
-   */
-  function runFollowup(query: string) {
-    if (!sessionId) return
+  function observeResearch(
+    sid: string, connect: (onEvent: (event: string, data: unknown) => void) => () => void,
+    planMsgIndex?: number,
+  ) {
     setPhase('executing')
     setResearchSteps([])
+    setError(null)
+    setRecovery(null)
     const runId = ++sseRunIdRef.current
     sseAbortRef.current?.()
-    sseAbortRef.current = continueResearchStream(
-      sessionId,
-      query,
-      (event, data) => {
-        if (runId !== sseRunIdRef.current) return
-        if (event === 'step') {
-          const { node } = data as { node: string }
-          setResearchSteps((prev) => [...prev, labelForTool(node)])
-        } else if (event === 'final') {
-          const f = data as ResearchFinal
-          // 追加新一条 assistant markdown（不替换旧 draft —— 每轮对话独立）
-          setMessages((m) => [
-            ...m,
-            { role: 'assistant', content: f.report_markdown, markdown: true },
-          ])
-          setPhase('idle')
-          // M5.5.10: 追问失败原因提示
-          if (f.failure_reason === 'search_failed') {
-            setError('⚠️ 论文检索失败（arXiv 服务暂时不可达）。请稍后重试或编辑 plan 修改搜索词。')
-          } else if (f.failure_reason === 'download_failed') {
-            setError('⚠️ 论文 PDF 下载失败（arXiv 服务暂时不可达）。综述已基于摘要生成，过段时间可重试。')
-          }
-        } else if (event === 'error') {
-          setError((data as { message?: string }).message ?? '执行失败')
-          setPhase('idle')
+    sseAbortRef.current = connect((event, data) => {
+      if (runId !== sseRunIdRef.current) return
+      if (event === 'step') {
+        setResearchSteps((prev) => [...prev, labelForTool((data as { node: string }).node)])
+      } else if (event === 'final') {
+        const final = data as ResearchFinal
+        setMessages((previous) => {
+          const approved = previous.map((message) => message.role === 'plan' ? { ...message, status: 'approved' as const } : message)
+          return final.message_id && approved.some((message) => message.role === 'assistant' && message.id === final.message_id)
+            ? approved : [...approved, { id: final.message_id ?? undefined, role: 'assistant', content: final.report_markdown, markdown: true }]
+        })
+        setPhase('idle')
+        hasApprovedPlanRef.current = true
+        if (final.failure_reason === 'search_failed') {
+          setError('⚠️ 论文检索失败（arXiv 服务暂时不可达）。请稍后重试。')
+        } else if (final.failure_reason === 'download_failed') {
+          setError('⚠️ 论文 PDF 下载失败。综述已基于摘要生成，过段时间可重试。')
         }
-      },
-    )
+      } else if (event === 'error') {
+        setError((data as { message?: string }).message ?? '执行失败')
+        setPhase('idle')
+        setRecovery('reconnect')
+        getPlan(sid).then(async (plan) => {
+          if (runId !== sseRunIdRef.current) return
+          hasApprovedPlanRef.current = plan.plan_status === 'approved'
+          setRecovery(plan.execution_status === 'running' ? 'reconnect' : plan.can_resume ? 'resume' : null)
+          if (plan.execution_steps) setResearchSteps(plan.execution_steps.map(labelForTool))
+          if (planMsgIndex !== undefined && ['pending', 'edited', 'approved', 'rejected'].includes(plan.plan_status)) {
+            setMessages((previous) => previous.map((message, index) => index === planMsgIndex && message.role === 'plan'
+              ? { ...message, status: plan.plan_status as PlanMsg['status'] } : message))
+          }
+          if (plan.execution_status === 'done') {
+            const session = await getSession(sid)
+            if (runId !== sseRunIdRef.current) return
+            const history: Message[] = session.messages
+              .filter((message) => message.role === 'user' || message.role === 'assistant')
+              .map((message) => ({ id: message.id, role: message.role as 'user' | 'assistant', content: message.content,
+                markdown: message.role === 'assistant' }))
+            if (plan.plan) history.push({ role: 'plan', plan: plan.plan, status: 'approved' })
+            setMessages(history)
+            setError(null)
+          }
+        }).catch(() => { /* Keep reconnect available until the server can report its state. */ })
+      }
+    })
   }
 
-  /** M5.5: 批准 plan → 走 SSE 执行流。
-   *  - POST /api/research/{sid}/plan/approve（带可选 edited_plan）
-   *  - SSE 推 step + final
-   *  - final → 综述 markdown 入流
-   */
+  function runFollowup(query: string) {
+    if (sessionId) observeResearch(sessionId, (onEvent) => continueResearchStream(sessionId, query, onEvent))
+  }
+
   function runExecute(planMsgIndex: number, editedPlan?: ResearchPlan) {
     if (!sessionId) return
-    setPhase('executing')
-    setResearchSteps([])
-    // M5.5.7: 批准瞬间立即把 plan.status 改 approved——按钮区立刻 readonly，
-    // 防止 researcher 跑期间用户重复点编辑/拒绝。
-    // error handler 失败时回滚到 pending。
-    setMessages((m) =>
-      m.map((msg, i) =>
-        i === planMsgIndex && msg.role === 'plan'
-          ? { ...msg, status: 'approved' as const }
-          : msg,
-      ),
-    )
-    const runId = ++sseRunIdRef.current
-    sseAbortRef.current?.()
-    sseAbortRef.current = approvePlanStream(
-      sessionId,
-      editedPlan ?? null,
-      (event, data) => {
-        if (runId !== sseRunIdRef.current) return
-        if (event === 'step') {
-          const { node } = data as { node: string }
-          setResearchSteps((prev) => [...prev, labelForTool(node)])
-        } else if (event === 'final') {
-          const f = data as ResearchFinal
-          // plan.status 已在函数开头设为 approved（幂等保留）
-          setMessages((m) => [
-            ...m,
-            { role: 'assistant', content: f.report_markdown, markdown: true },
-          ])
-          setPhase('idle')
-          // M5.5.6: approve 完成后进入"可追问"状态
-          setHasApprovedPlan(true)
-          hasApprovedPlanRef.current = true
-          // M5.5.10: 失败原因提示
-          if (f.failure_reason === 'search_failed') {
-            setError('⚠️ 论文检索失败（arXiv 服务暂时不可达）。请稍后重试或编辑 plan 修改搜索词。')
-          } else if (f.failure_reason === 'download_failed') {
-            setError('⚠️ 论文 PDF 下载失败（arXiv 服务暂时不可达）。综述已基于摘要生成，过段时间可重试。')
-          }
-        } else if (event === 'error') {
-          // 回滚：plan 回到 pending 让用户能重新编辑/拒绝/批准
-          setMessages((m) =>
-            m.map((msg, i) =>
-              i === planMsgIndex && msg.role === 'plan'
-                ? { ...msg, status: 'pending' as const }
-                : msg,
-            ),
-          )
-          setHasApprovedPlan(false)
-          hasApprovedPlanRef.current = false
-          setError((data as { message?: string }).message ?? '执行失败')
-          setPhase('idle')
-        }
-      },
-    )
+    setMessages((previous) => previous.map((message, index) => index === planMsgIndex && message.role === 'plan'
+      ? { ...message, status: 'approved' as const } : message))
+    observeResearch(sessionId, (onEvent) => approvePlanStream(sessionId, editedPlan ?? null, onEvent), planMsgIndex)
+  }
+
+  function recoverResearch() {
+    if (!sessionId) return
+    const connect = recovery === 'resume' ? resumeResearchStream : researchEvents
+    observeResearch(sessionId, (onEvent) => connect(sessionId, onEvent))
   }
 
   /** 用户点 "拒绝" → 调 reject endpoint，卡片变灰。 */
@@ -339,8 +307,7 @@ export function ChatPanel() {
             : msg,
         ),
       )
-      // M5.5.6: rejected 后再发方向 → 回 runPlan 路径重新生成 plan
-      setHasApprovedPlan(false)
+      // 拒绝后重新澄清研究方向。
       hasApprovedPlanRef.current = false
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err))
@@ -387,16 +354,18 @@ export function ChatPanel() {
     }
 
     // QA 模式
+    const runId = ++sseRunIdRef.current
     setPhase('planning') // 借用 phase='planning' 显示"思考中…"
     try {
       const { reply, session_id, citations } = await chatQA(query, sessionId, Array.from(selectedKBs))
+      if (runId !== sseRunIdRef.current) return
       setSessionId(session_id)
       setMessages((m) => [...m, { role: 'assistant', content: reply, citations }])
       if (!routeSessionId) navigate(`/chat/${session_id}`)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
+      if (runId === sseRunIdRef.current) setError(err instanceof ApiError ? err.message : String(err))
     } finally {
-      setPhase('idle')
+      if (runId === sseRunIdRef.current) setPhase('idle')
     }
   }
 
@@ -490,6 +459,11 @@ export function ChatPanel() {
           {error && (
             <div className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">错误：{error}</div>
           )}
+          {recovery && phase === 'idle' && (
+            <button onClick={recoverResearch} className="rounded bg-blue-500 px-3 py-2 text-sm text-white">
+              {recovery === 'resume' ? '继续未完成的研究' : '重新连接研究进度'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -553,7 +527,9 @@ function MessageBubble({ msg }: { msg: BaseMsg }) {
               title={c.text}
               className="cursor-default rounded bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600"
             >
-              [{i + 1}] {c.doc_id.slice(0, 8)} p.{c.page}
+              [{i + 1}] {c.doc_id.slice(0, 8)} p.{c.page}{c.page_end && c.page_end !== c.page ? `–${c.page_end}` : ''}
+              {c.section && ` · ${c.section}`}
+              {c.figure_ids?.length ? ` · 图 ${c.figure_ids.join(', ')}` : ''}
             </span>
           ))}
         </div>
