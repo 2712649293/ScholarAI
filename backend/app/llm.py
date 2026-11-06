@@ -29,12 +29,49 @@ RETRYABLE = (
 @lru_cache(maxsize=1)
 def get_llm() -> ChatOpenAI:
     """单例 ChatModel。DeepSeek 兼容 OpenAI 接口，直接用 ChatOpenAI。"""
+    return _create_llm(
+        settings.llm_model, settings.llm_api_key,
+        settings.llm_base_url, settings.llm_reasoning_effort,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_small_llm() -> ChatOpenAI:
+    """论文分析专用模型；未配置模型时复用主模型，不在调用失败后切换。"""
+    if not settings.small_llm_model.strip():
+        return get_llm()
+    base_url = settings.small_llm_base_url.strip() or settings.llm_base_url
+    api_key = settings.small_llm_api_key.strip()
+    if not api_key:
+        if base_url.rstrip("/") != settings.llm_base_url.strip().rstrip("/"):
+            raise ValueError("独立 SMALL_LLM_BASE_URL 需要设置 SMALL_LLM_API_KEY（无鉴权服务可填 none）")
+        api_key = settings.llm_api_key
+    return _create_llm(
+        settings.small_llm_model, api_key,
+        base_url, settings.small_llm_reasoning_effort,
+    )
+
+
+def _create_llm(model: str, api_key: str, base_url: str, effort: str) -> ChatOpenAI:
+    model_name = model.strip()
+    reasoning_effort = effort.strip() or None
+    # vLLM/Qwen OpenAI-compatible deployments may emit only ``reasoning``
+    # when thinking is enabled. LangChain exposes that response with empty
+    # ``content``, which breaks planner JSON and normal review text. Disable
+    # thinking by default for Qwen unless the operator explicitly overrides it.
+    if reasoning_effort is None and model_name.lower().startswith("qwen"):
+        reasoning_effort = "none"
+    kwargs: dict[str, Any] = {
+        "model": model_name,
+        "api_key": SecretStr(api_key),
+        "base_url": base_url,
+        "temperature": 0.3,
+        "timeout": settings.llm_timeout_seconds,
+    }
+    if reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
     return ChatOpenAI(
-        model=settings.llm_model,
-        api_key=SecretStr(settings.llm_api_key),
-        base_url=settings.llm_base_url,
-        temperature=0.3,
-        timeout=settings.llm_timeout_seconds,
+        **kwargs,
     )
 
 
@@ -44,9 +81,11 @@ def get_llm() -> ChatOpenAI:
     retry=retry_if_exception_type(RETRYABLE),
     reraise=True,
 )
-async def call_llm(messages: list[Any], *, timeout: float | None = None) -> str:
+async def call_llm(
+    messages: list[Any], *, timeout: float | None = None, use_small_model: bool = False,
+) -> str:
     """异步调 LLM，返回文本结果。带超时 + 3 次重试。"""
-    llm = get_llm()
+    llm = get_small_llm() if use_small_model else get_llm()
     t = timeout or settings.llm_timeout_seconds
     from app.observability.callbacks import HANDLER  # 局部导入避免循环
 

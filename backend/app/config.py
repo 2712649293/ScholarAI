@@ -17,7 +17,23 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
+    # Some OpenAI-compatible Qwen endpoints return the visible answer in the
+    # reasoning field unless thinking is disabled. Leave empty for providers
+    # that do not need this parameter; Qwen models are handled in llm.py.
+    llm_reasoning_effort: str = ""
     llm_timeout_seconds: int = 60
+
+    # 单篇论文的章节提取与汇总；模型留空时兼容原有主模型配置。
+    small_llm_model: str = ""
+    small_llm_base_url: str = ""
+    small_llm_api_key: str = ""
+    small_llm_reasoning_effort: str = ""
+
+    # paper-search-mcp: the external MCP server used for paper discovery and
+    # PDF retrieval.  The default command is installed with the backend.
+    paper_search_mcp_command: str = "paper-search-mcp"
+    paper_search_mcp_args: str = ""
+    paper_search_mcp_timeout_seconds: float = Field(default=120, gt=0)
 
     # Embedding
     embedding_provider: str = "bge"

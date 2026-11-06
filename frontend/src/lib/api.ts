@@ -222,12 +222,18 @@ export function updateSession(id: string, title: string): Promise<SessionSummary
 // === Research（M3.4，SSE 流式） ===
 
 export interface ResearchPaper {
-  arxiv_id: string
+  paper_key?: string | null
+  arxiv_id?: string | null
   title: string
   authors: string[]
   year: number
   abstract: string
+  doi?: string | null
+  source_ids?: Record<string, string>
+  sources?: string[]
   pdf_url?: string | null
+  landing_url?: string | null
+  is_open_access?: boolean
 }
 
 export interface ResearchFinal {
@@ -236,14 +242,7 @@ export interface ResearchFinal {
   report_markdown: string
   report_path: string
   papers: ResearchPaper[]
-  failure_reason?: 'search_failed' | 'download_failed' | null  // M5.5.10
-}
-
-export interface ResearchBody {
-  query: string
-  session_id?: string
-  depth?: 'quick' | 'normal' | 'deep'
-  max_papers?: number
+  failure_reason?: 'search_failed' | 'download_failed' | 'analysis_failed' | 'review_failed' | null
 }
 
 // POST SSE 共用解析器，支持分块 UTF-8、CRLF 与多行 data；主动取消静默结束。
@@ -297,12 +296,6 @@ function postSSE(
   return () => ctrl.abort()
 }
 
-export function researchStream(
-  body: ResearchBody, onEvent: (event: string, data: unknown) => void,
-): () => void {
-  return postSSE('/api/research/stream', body, onEvent)
-}
-
 // === Plan（M5.5：用户可审可改的研究计划）===
 
 export interface PlanSubQuestion {
@@ -322,6 +315,7 @@ export interface PlanOutlineSection {
 
 export interface ResearchPlan {
   title: string
+  research_mode?: 'quick' | 'deep'
   sub_questions: PlanSubQuestion[]
   search_queries: PlanSearchQueryGroup[]
   outline: PlanOutlineSection[]
@@ -336,7 +330,7 @@ export interface PlanResponse {
   plan: ResearchPlan | null
   plan_status: PlanStatus
   plan_generated_at: string | null
-  execution_status?: 'idle' | 'running' | 'done' | 'failed' | 'interrupted'
+  execution_status?: 'idle' | 'running' | 'done' | 'failed' | 'needs_review' | 'timed_out' | 'cancelled' | 'interrupted'
   execution_steps?: string[]
   execution_error?: string | null
   can_resume?: boolean
@@ -351,8 +345,8 @@ export function getPlan(sessionId: string): Promise<PlanResponse> {
 export function startPlan(body: {
   query: string
   session_id?: string
-  depth?: 'quick' | 'normal' | 'deep'
   max_papers?: number
+  research_mode?: 'quick' | 'deep'
 }): Promise<PlanResponse> {
   return postJson<PlanResponse>('/api/research/plan', body)
 }
@@ -378,6 +372,7 @@ export function approvePlanStream(
 export interface ClarifyConfirmed {
   session_id: string
   clarify_direction: { refined_query: string; year_start: number; year_end: number; notes: string; confirmed_at: string }
+  research_mode?: 'quick' | 'deep'
   plan_status: 'pending'
 }
 
@@ -410,4 +405,8 @@ export function resumeResearchStream(
   sessionId: string, onEvent: (event: string, data: unknown) => void,
 ): () => void {
   return postSSE(`/api/research/${sessionId}/resume/stream`, {}, onEvent)
+}
+
+export function cancelResearch(sessionId: string): Promise<{ session_id: string; status: string }> {
+  return postJson(`/api/research/${sessionId}/cancel`, {})
 }

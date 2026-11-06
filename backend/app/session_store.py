@@ -39,6 +39,11 @@ class DBSessionStore:
             if session_id:
                 s = db.get(SessionModel, session_id)
                 if s is not None:
+                    if s.mode != mode:
+                        from app.errors import SessionModeConflict
+                        raise SessionModeConflict(
+                            f"会话已固定为 {s.mode} 模式，不能以 {mode} 模式使用"
+                        )
                     return Session(id=s.id, title=s.title, mode=s.mode)
             new_id = session_id or uuid.uuid4().hex
             s = SessionModel(id=new_id, mode=mode)

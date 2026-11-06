@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from app.agents.state import ResearchContext
+from app.agents.nodes.synthesizer import _format_papers, analysis_for
 from app.llm import call_llm
+from app.search.models import citation_id
 
 
 class ReviewResult(BaseModel):
@@ -21,35 +23,48 @@ _parser = PydanticOutputParser(pydantic_object=ReviewResult)
 
 SYSTEM = (
     "你是学术综述审校助手。检查综述是否：1) 覆盖所有子问题；"
-    "2) 每个 [arxiv_id] 引用都在给定论文列表中存在；3) 结构完整。\n{format_instructions}"
+    "2) 每个 [论文引用标识] 都在给定论文列表中存在；3) 结构完整；4) 摘要证据明确标注，不能冒充全文分析或推断摘要没有的实验细节。\n{format_instructions}"
 )
 
 
 class ReviewUpdate(TypedDict):
     passed: bool
     feedback: str
+    status: str
 
 
 async def run(state: ResearchContext) -> ReviewUpdate:
     papers = state.get("papers", [])
     if not papers:  # 无论文，无需审校
-        return {"passed": True, "feedback": ""}
+        return {"passed": False, "feedback": "没有论文证据，无法完成审校", "status": "failed"}
 
-    valid_ids = ", ".join(p["arxiv_id"] for p in papers)
+    valid_ids = ", ".join(citation_id(p) for p in papers)
     sub_qs = "\n".join(f"- {q}" for q in state.get("sub_questions", []))
     user = (
         f"子问题：\n{sub_qs}\n\n"
-        f"合法 arxiv_id：{valid_ids}\n\n"
+        f"合法论文引用标识：{valid_ids}\n\n"
         f"待审校综述：\n{state.get('draft', '')}"
     )
+    if state.get("research_mode") == "deep":
+        analyses = [a for p in papers if p.get("local_path") and
+                    (a := analysis_for(p, state.get("analyses", [])))]
+        user += "\n\n论文证据（全文分析或仅摘要）：\n" + _format_papers(papers, analyses)
     messages = [
         SystemMessage(content=SYSTEM.format(format_instructions=_parser.get_format_instructions())),
         HumanMessage(content=user),
     ]
     try:
         parsed = _parser.parse(await call_llm(messages, timeout=120))
-    except Exception:  # 审校失败不阻断，放行避免死循环
-        return {"passed": True, "feedback": ""}
+    except Exception:
+        return {
+            "passed": False,
+            "feedback": "审校服务不可用，请人工复核报告",
+            "status": "failed",
+        }
 
     feedback = "" if parsed.passed else "；".join(parsed.issues)
-    return {"passed": parsed.passed, "feedback": feedback}
+    return {
+        "passed": parsed.passed,
+        "feedback": feedback,
+        "status": "passed" if parsed.passed else "failed",
+    }

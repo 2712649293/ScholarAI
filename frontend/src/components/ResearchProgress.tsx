@@ -1,6 +1,8 @@
 // tool 名 → 时间线显示的标签
 const TOOL_LABELS: Record<string, string> = {
-  search_arxiv: '🔍 检索 arxiv',
+  search_papers: '🔍 检索论文',
+  search_arxiv: '🔍 检索论文',
+  select_papers: '🎯 筛选论文',
   download_papers: '⬇ 下载 PDF',
   analyze_papers: '🧠 解析论文',
   write_review: '✍ 生成综述',

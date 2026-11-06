@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { chatQA, ApiError, listKBs, createKB, deleteKB, researchStream } from './api'
+import { chatQA, ApiError, listKBs, createKB, deleteKB, clarifyStream } from './api'
 
 describe('api.chatQA', () => {
   beforeEach(() => {
@@ -59,7 +59,7 @@ describe('SSE transport', () => {
     })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stream)))
     const event = await new Promise<[string, unknown]>((resolve) => {
-      researchStream({ query: 'q' }, (name, data) => resolve([name, data]))
+      clarifyStream({ query: 'q' }, (name, data) => resolve([name, data]))
     })
     expect(event).toEqual(['final', { text: '中文' }])
   })
@@ -67,7 +67,7 @@ describe('SSE transport', () => {
   it('reports a premature EOF so the UI does not stay busy', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(': keepalive\n\n')))
     const event = await new Promise<[string, unknown]>((resolve) => {
-      researchStream({ query: 'q' }, (name, data) => resolve([name, data]))
+      clarifyStream({ query: 'q' }, (name, data) => resolve([name, data]))
     })
     expect(event).toEqual(['error', { message: 'SSE 连接提前结束，请重试' }])
   })
@@ -77,7 +77,7 @@ describe('SSE transport', () => {
       options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
     })))
     const onEvent = vi.fn()
-    researchStream({ query: 'q' }, onEvent)()
+    clarifyStream({ query: 'q' }, onEvent)()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(onEvent).not.toHaveBeenCalled()
   })

@@ -20,6 +20,7 @@ import {
 
 vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
+  cancelResearch: vi.fn(),
   listKBs: vi.fn().mockResolvedValue([]),
   getSession: vi.fn().mockResolvedValue({ messages: [] }),
   getPlan: vi.fn().mockResolvedValue({ plan: null, plan_status: 'none' }),
@@ -705,7 +706,7 @@ describe('ChatPanel', () => {
     </MemoryRouter>)
     await screen.findByText(/主 agent 规划中/)
     act(() => callbacks[0]('step', { node: 'search_arxiv' }))
-    await screen.findByText(/检索 arxiv/)
+    await screen.findByText(/检索论文/)
     const user = userEvent.setup()
     await user.click(screen.getByText('其他对话'))
     await screen.findByText('普通会话')

@@ -36,6 +36,7 @@ class ResearchPlan(BaseModel):
     """完整研究计划。LLM 输出约束（with_structured_output / JSON mode fallback）。"""
 
     title: str
+    research_mode: Literal["quick", "deep"] = "quick"
     sub_questions: list[SubQuestion] = Field(..., min_length=3, max_length=5)
     search_queries: list[SearchQueryGroup] = Field(..., min_length=3, max_length=5)
     outline: list[OutlineSection] = Field(..., min_length=5, max_length=7)
@@ -49,7 +50,7 @@ class PlanRequest(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=2000)
     session_id: str | None = None
-    depth: Literal["quick", "normal", "deep"] = "normal"
+    research_mode: Literal["quick", "deep"] = "quick"
     max_papers: int = Field(20, ge=1, le=100)
 
 

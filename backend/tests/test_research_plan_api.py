@@ -16,6 +16,41 @@ from fastapi.testclient import TestClient
 from app.agents.schemas import ResearchPlan
 from app.main import app
 
+
+def _seed_clarified_session(client: TestClient, session_id: str, query: str = "q") -> str:
+    """创建已完成澄清的研究 session，计划 API 测试从此状态开始。"""
+    from langchain_core.messages import HumanMessage
+    from app.api.research import _agent_config, _build_plan_graph
+    from app.session_store import store
+
+    store.get_or_create(session_id, mode="research")
+
+    async def seed() -> None:
+        graph = await _build_plan_graph()
+        await graph.aupdate_state(
+            _agent_config(session_id),
+            {
+                "query": query,
+                "original_query": query,
+                "clarified_query": query,
+                "session_id": session_id,
+                "intent": "research",
+                "research_mode": "quick",
+                "clarify_direction": {"refined_query": query, "year_start": 2020, "year_end": 2026},
+                "plan_status": "pending",
+                "messages": [HumanMessage(content=query)],
+            },
+        )
+
+    client.portal.call(seed)
+    return session_id
+
+
+def _start_plan(client: TestClient, query: str = "q", session_id: str = "sid-plan", **extra):
+    _seed_clarified_session(client, session_id, query)
+    body = {"query": query, "session_id": session_id, **extra}
+    return client.post("/api/research/plan", json=body)
+
 # 标准 mock plan
 def _make_plan_json() -> dict:
     return {
@@ -64,7 +99,7 @@ def _patch_planner_llm(plan_json: dict | None = _make_plan_json()):
 def test_plan_endpoint_returns_202_with_plan(client: TestClient):
     """调 /plan → 202 + plan_status=pending + plan 字段。"""
     with _patch_planner_llm():
-        r = client.post("/api/research/plan", json={"query": "LLM 推理", "depth": "normal"})
+        r = _start_plan(client, "LLM 推理", "sid-initial")
     assert r.status_code == 202
     data = r.json()
     assert data["plan_status"] == "pending"
@@ -76,12 +111,17 @@ def test_plan_endpoint_returns_202_with_plan(client: TestClient):
 def test_plan_endpoint_uses_session_id_from_request(client: TestClient):
     """请求里 session_id → 沿用，不创建新 session。"""
     with _patch_planner_llm():
-        r = client.post(
-            "/api/research/plan",
-            json={"query": "q", "session_id": "fixed-sid", "depth": "normal"},
-        )
+        r = _start_plan(client, "q", "fixed-sid")
     assert r.status_code == 202
     assert r.json()["session_id"] == "fixed-sid"
+
+
+def test_explicit_deep_mode_survives_clarification_default(client: TestClient):
+    """用户明确选择 deep 时，澄清阶段的 quick 默认值不能覆盖计划模式。"""
+    with _patch_planner_llm():
+        r = _start_plan(client, "q", "sid-deep", research_mode="deep")
+    assert r.status_code == 202
+    assert r.json()["plan"]["research_mode"] == "deep"
 
 
 def test_plan_endpoint_llm_failure_handled_by_exception_handler(client: TestClient):
@@ -99,7 +139,7 @@ def test_plan_endpoint_llm_failure_handled_by_exception_handler(client: TestClie
 
     with patch("app.agents.nodes.planner.get_llm", return_value=fake_llm):
         try:
-            r = client.post("/api/research/plan", json={"query": "q"})
+            r = _start_plan(client, "q", "sid-llm")
         except RuntimeError:
             # TestClient 在 astream 内部抛 RuntimeError 时可能冒泡（langgraph
             # retry 机制未拦截），这是已知行为——业务上 FastAPI middleware 会拦。
@@ -122,7 +162,7 @@ def test_get_plan_returns_none_for_new_session(client: TestClient):
 def test_get_plan_returns_plan_after_generation(client: TestClient):
     """POST /plan 后 GET /plan → 拿到 pending plan。"""
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-get"})
+        r1 = _start_plan(client, "q", "sid-get")
         sid = r1.json()["session_id"]
         r2 = client.get(f"/api/research/{sid}/plan")
     assert r2.status_code == 200
@@ -136,7 +176,7 @@ def test_get_plan_returns_plan_after_generation(client: TestClient):
 def test_patch_plan_updates_fields_keeps_status(client: TestClient):
     """PATCH plan → 字段更新 + status=edited。"""
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-patch"})
+        r1 = _start_plan(client, "q", "sid-patch")
         sid = r1.json()["session_id"]
 
     # 编辑子问题
@@ -162,7 +202,7 @@ def test_approve_returns_sse_stream(client: TestClient):
     """批准 → SSE 流（含 step + final）。"""
     # 先生成 plan
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-app"})
+        r1 = _start_plan(client, "q", "sid-app")
         sid = r1.json()["session_id"]
 
     # mock researcher 跑：planner approve 后 researcher 会跑 create_agent，
@@ -189,7 +229,7 @@ def test_approve_returns_sse_stream(client: TestClient):
 def test_approve_with_edited_plan_uses_edited(client: TestClient):
     """批准时传 edited_plan → 后端用它覆盖。"""
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-ed"})
+        r1 = _start_plan(client, "q", "sid-ed")
         sid = r1.json()["session_id"]
 
     edited = _make_plan_json()
@@ -220,7 +260,7 @@ def test_approve_without_plan_returns_404(client: TestClient):
 def test_reject_returns_204_with_rejected_status(client: TestClient):
     """reject → 200 + status=rejected + plan=None。"""
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-rj"})
+        r1 = _start_plan(client, "q", "sid-rj")
         sid = r1.json()["session_id"]
 
     r2 = client.post(f"/api/research/{sid}/plan/reject")
@@ -234,7 +274,7 @@ def test_reject_allows_regenerate(client: TestClient):
     """reject 后再 POST /plan → 能重新生成新 plan。"""
     # 第一次生成
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q1", "session_id": "sid-reg"})
+        r1 = _start_plan(client, "q1", "sid-reg")
         sid = r1.json()["session_id"]
     # reject
     client.post(f"/api/research/{sid}/plan/reject")
@@ -252,7 +292,7 @@ def test_start_plan_guard_returns_approved_when_already_approved(client: TestCli
     """M5.5.6 guard: 已 approved 时再 POST /plan → 不跑 planner，直接返 PlanResponse{status:approved}。"""
     # 先生成 plan + 批准
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-guard"})
+        r1 = _start_plan(client, "q", "sid-guard")
         sid = r1.json()["session_id"]
 
     from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -280,7 +320,7 @@ def test_continue_requires_approved_status(client: TestClient):
     """未 approved 时 POST /continue → 409。"""
     # 先生成 plan 但不批准
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-c1"})
+        r1 = _start_plan(client, "q", "sid-c1")
         sid = r1.json()["session_id"]
 
     r2 = client.post(f"/api/research/{sid}/continue/stream", json={"query": "追问"})
@@ -291,7 +331,7 @@ def test_continue_after_approved_returns_sse(client: TestClient):
     """approved 后 POST /continue → 走 SSE，含 step + final。"""
     # 先生成 plan + 批准
     with _patch_planner_llm():
-        r1 = client.post("/api/research/plan", json={"query": "q", "session_id": "sid-c2"})
+        r1 = _start_plan(client, "q", "sid-c2")
         sid = r1.json()["session_id"]
 
     # 模拟批准 + researcher 跑出 tool calls

@@ -24,7 +24,9 @@ class SessionModel(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     mode: Mapped[str] = mapped_column(String(20), default="qa")
-    status: Mapped[str] = mapped_column(String(20), default="idle")  # idle|running|done|failed
+    status: Mapped[str] = mapped_column(
+        String(20), default="idle"
+    )  # idle|running|done|failed|needs_review|timed_out|cancelled
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

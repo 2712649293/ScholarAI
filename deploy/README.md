@@ -37,6 +37,7 @@ nginx 配置位于 [frontend/nginx.conf](../frontend/nginx.conf)，提供 SPA �
 - PDF 索引由进程内 `BackgroundTasks` 执行，无持久化任务队列。重启后未完成文档标为失败，可在页面重新处理；索引与删除通过单进程锁互斥。
 - 已批准研究与追问的 SSE 断开仅取消订阅，后台继续执行；服务退出会停止任务，启动时将遗留 running 状态标为 failed，用户可从待执行检查点手动恢复。事件缓存不跨进程重启保留，已完成报告与消息仍落盘。未接入持久任务队列或自动重试；恢复可能再次调用尚未提交结果的外部工具。
 - `RESEARCH_TIMEOUT_SECONDS` 尚未接入研究总超时；当前由各工具的超时和 agent 步数上限约束，nginx 超时不等于任务取消。
+- 论文检索和 PDF 下载由后端依赖中的 `paper-search-mcp` MCP 子进程执行；如改用独立命令或服务，在后端环境配置 `PAPER_SEARCH_MCP_COMMAND` / `PAPER_SEARCH_MCP_ARGS`，并确保容器可访问对应网络和凭据。
 - 更换 embedding 的清理行为见根 README。`make clean` 会删除根目录 `data/` 等目录，不用于日常停服。
 
 迁移到 Kubernetes 前需落实持久卷、凭据注入和上述探针；多副本还需调整 Chroma、检查点与任务执行方式。

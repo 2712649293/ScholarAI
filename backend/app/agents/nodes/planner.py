@@ -28,6 +28,7 @@ PLANNER_SYSTEM = """你是学术研究规划师。基于用户给出的研究方
 
 {
   "title": "综述标题（≤30字）",
+  "research_mode": "quick",
   "sub_questions": [{"question": "...", "rationale": "..."}, ...],
   "search_queries": [{"intent": "...", "queries": ["...", "..."]}, ...],
   "outline": [{"heading": "...", "bullets": ["...", "..."]}, ...],
@@ -43,14 +44,14 @@ PLANNER_SYSTEM = """你是学术研究规划师。基于用户给出的研究方
 - 只输出 JSON，不要任何额外文字或 markdown"""
 
 
-async def generate_plan(query: str, depth: str = "normal") -> ResearchPlan:
+async def generate_plan(query: str, research_mode: str = "quick") -> ResearchPlan:
     """调 LLM 生成 ResearchPlan。失败自动 fallback 到 JSON mode。
 
     ponytail：未加重试/tenacity — 一次失败直接走 fallback 路径。
     """
     msgs = [
         SystemMessage(content=PLANNER_SYSTEM),
-        HumanMessage(content=f"研究方向：{query}\n深度档位：{depth}"),
+        HumanMessage(content=f"研究方向：{query}\n研究模式：{research_mode}（只能输出 quick 或 deep）"),
     ]
     try:
         llm = get_llm().with_structured_output(ResearchPlan)
@@ -84,12 +85,14 @@ async def planner_node(state: ResearchState) -> dict:
     """
     existing_plan = state.get("plan")
     if not existing_plan:
-        generated_plan = await generate_plan(state["query"], state.get("depth", "normal"))
+        generated_plan = await generate_plan(state["query"], state.get("research_mode", "quick"))
+        plan = generated_plan.model_dump()
+        plan["research_mode"] = state.get("research_mode", plan.get("research_mode", "quick"))
         # interrupt 会暂停节点且不会提交 return 更新。API 从 payload 写入 plan，
         # resume 重跑本节点时即可读取 existing_plan，避免重复生成。
-        interrupt(_planner_payload_for_client(generated_plan.model_dump(), state.get("session_id", "")))
+        interrupt(_planner_payload_for_client(plan, state.get("session_id", "")))
         return {
-            "plan": generated_plan.model_dump(), "plan_status": "pending",
+            "plan": plan, "research_mode": plan["research_mode"], "plan_status": "pending",
             "plan_generated_at": _now_iso(),
         }
 
@@ -106,6 +109,10 @@ async def planner_node(state: ResearchState) -> dict:
 
     # approve：可选 edited_plan
     plan = decision.get("edited_plan") or existing_plan
+    mode = plan.get("research_mode") or state.get("research_mode", "quick")
+    if mode not in {"quick", "deep"}:
+        mode = "quick"
+    plan = {**plan, "research_mode": mode}
     # 提取 sub_questions 字符串列表（researcher agent 用）和 search_queries 字符串列表
     sub_q = [sq.get("question", "") if isinstance(sq, dict) else sq for sq in plan.get("sub_questions", [])]
     sq_groups = plan.get("search_queries", [])
@@ -122,6 +129,7 @@ async def planner_node(state: ResearchState) -> dict:
     plan_summary = json.dumps(plan, ensure_ascii=False, indent=2)
     return {
         "plan": plan,
+        "research_mode": mode,
         "plan_status": "approved",
         "plan_generated_at": state.get("plan_generated_at") or _now_iso(),
         "sub_questions": sub_q,

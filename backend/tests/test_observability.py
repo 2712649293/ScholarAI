@@ -71,7 +71,7 @@ def _llm_result(input_t: int = 10, output_t: int = 20) -> LLMResult:
 def test_handler_records_tool_duration() -> None:
     h = ObservabilityHandler()
     rid = uuid.uuid4()
-    h.on_tool_start({"name": "search_arxiv"}, "q", run_id=rid)
+    h.on_tool_start({"name": "search_papers"}, "q", run_id=rid)
     h.on_tool_end("ok", run_id=rid)
     # 没异常即通过；指标在进程级 registry 验证麻烦，下面统一验证渲染
     body = client.get("/metrics").text

@@ -15,7 +15,9 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 
 from app.main import app
+from app.search.models import SearchResult
 from app.session_store import store as global_store
+from tests.test_research_plan_api import _make_plan_json, _patch_planner_llm, _start_plan
 
 # module-level 不创建 client；用 function-scoped fixture（lifespan 触发）
 
@@ -40,9 +42,12 @@ def _tc(name, args, i):
 
 
 SCRIPT = [
-    _tc("search_arxiv", {"queries": ["q1"]}, "1"),
-    _tc("download_papers", {}, "2"),
-    _tc("write_review", {}, "3"),
+    _tc("search_papers", {"queries": ["q1"]}, "1"),
+    _tc("select_papers", {"paper_keys": ["arxiv:2401.00001"]}, "2"),
+    _tc("download_papers", {}, "3"),
+    _tc("analyze_papers", {}, "4"),
+    _tc("write_review", {}, "5"),
+    _tc("review_report", {}, "6"),
     AIMessage(content="done"),
 ]
 
@@ -51,27 +56,36 @@ FAKE_PAPERS = [
 ]
 
 
-async def _fake_download(client, sem, paper, dest_dir):
-    # 写真实 PDF 到 session 子目录（与真 downloader 一致：arxid_id + ".pdf"）
-    paper_file = dest_dir / f"{paper['arxiv_id'].replace('/', '_')}.pdf"
-    paper_file.write_bytes(b"%PDF-fake")
-    return {**paper, "local_path": str(paper_file)}, True
+class FakeSearchAgent:
+    async def run(self, state):
+        return SearchResult(FAKE_PAPERS, state["search_queries"], ["arxiv"], {}, 1, "completed")
+
+
+class FakeMCP:
+    async def download(self, *, save_path, **kwargs):
+        paper_file = Path(save_path) / "mcp-paper.pdf"
+        paper_file.write_bytes(b"%PDF-fake")
+        return str(paper_file)
 
 
 def _run_research_and_get_sid(query: str, session_id: str | None, c) -> str:
-    body = {"query": query, "depth": "quick"}
-    if session_id:
-        body["session_id"] = session_id
+    sid = session_id or f"cleanup-{query[-1]}"
     with (
+        _patch_planner_llm(),
         patch("app.agents.research_agent.get_llm", return_value=ScriptedModel(responses=SCRIPT)),
-        patch("app.agents.nodes.searcher._search_one", return_value=FAKE_PAPERS),
-        patch("app.agents.nodes.downloader._download_one", new=_fake_download),
+        patch("app.agents.tools.SearchAgent", FakeSearchAgent),
+        patch("app.agents.nodes.downloader.PaperSearchMCP", return_value=FakeMCP()),
+        patch("app.agents.nodes.analyzer.run", new=AsyncMock(return_value={"analyses": [{"paper_key": "arxiv:2401.00001", "status": "ok"}]})),
         patch("app.agents.nodes.synthesizer.call_llm", new=AsyncMock(return_value=SYNTH)),
         patch("app.agents.nodes.reviewer.call_llm", new=AsyncMock(return_value=REVIEW)),
     ):
-        r = c.post("/api/research", json=body)
+        r = _start_plan(c, query, sid, research_mode="deep")
+        assert r.status_code == 202, r.text
+        assert r.json()["plan"]["research_mode"] == "deep"
+        r = c.post(f"/api/research/{sid}/plan/approve")
     assert r.status_code == 200, r.text
-    return r.json()["session_id"]
+    assert "event: final" in r.text
+    return sid
 
 
 def test_delete_session_removes_paper_folder(tmp_path, client) -> None:

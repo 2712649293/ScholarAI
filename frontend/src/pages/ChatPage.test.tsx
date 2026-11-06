@@ -7,7 +7,6 @@ vi.mock('@/lib/api', () => ({
   chatQA: vi.fn(),
   listKBs: vi.fn().mockResolvedValue([]),
   getSession: vi.fn().mockResolvedValue({ messages: [] }),
-  researchStream: vi.fn(),
   ApiError: class extends Error {},
 }))
 

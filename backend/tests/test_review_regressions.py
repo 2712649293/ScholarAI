@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.config import settings
 from app.session_store import store
-from tests.test_research_plan_api import _make_plan_json, _patch_planner_llm
+from tests.test_research_plan_api import _make_plan_json, _patch_planner_llm, _start_plan
 
 
 class ScriptedModel(FakeMessagesListChatModel):
@@ -74,7 +74,7 @@ def test_followup_sse_history_and_report_match_and_delete_clears_checkpoint(clie
 
 def test_plan_validates_edits_and_cannot_reapprove(client):
     with _patch_planner_llm():
-        sid = client.post("/api/research/plan", json={"query": "q"}).json()["session_id"]
+        sid = _start_plan(client, "q", "review-plan").json()["session_id"]
     assert client.patch(f"/api/research/{sid}/plan", json={"plan": {"outline": []}}).status_code == 422
     assert client.post(f"/api/research/{sid}/plan/approve", json={"edited_plan": {"title": "bad"}}).status_code == 422
     assert client.get(f"/api/research/{sid}/plan").json()["plan_status"] == "pending"
@@ -121,15 +121,23 @@ def test_upload_limits_cleanup_and_delete_pdf(client, tmp_path, monkeypatch, fak
 
 @pytest.mark.asyncio
 async def test_year_filter_and_partial_empty_search():
-    from app.agents.nodes import searcher
-    hit = lambda year: {"year": year, "arxiv_id": str(year)}
-    mocked = AsyncMock(return_value=[hit(2015), hit(2022), hit(2025)])
-    with patch.object(searcher, "_search_with_timeout", mocked):
-        result = await searcher.run({"search_queries": ["rag"], "clarify_direction": {"year_start": 2010, "year_end": 2023}})
-    assert [p["year"] for p in result["papers"]] == [2022, 2015]
-    assert "submittedDate:[201001010000 TO 202312312359]" in mocked.call_args.args[0]
-    with patch.object(searcher, "_search_with_timeout", AsyncMock(side_effect=[RuntimeError(), []])):
-        assert (await searcher.run({"search_queries": ["a", "b"]}))["papers"] == []
+    from app.search.service import SearchAgent
+
+    class FakeMCP:
+        calls = []
+
+        async def search(self, query, *, max_results_per_source, year=""):
+            self.calls.append((query, year))
+            return {"sources_used": ["arxiv"], "errors": {}, "papers": []}
+
+    fake = FakeMCP()
+    with patch("app.search.service.PaperSearchMCP", return_value=fake):
+        result = await SearchAgent().run(
+            {"search_queries": ["rag"], "max_papers": 20,
+             "clarify_direction": {"year_start": 2010, "year_end": 2023}}
+        )
+    assert result.papers == []
+    assert fake.calls == [("rag", "2010-2023")]
 
 
 @pytest.mark.asyncio

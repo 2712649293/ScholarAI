@@ -12,7 +12,7 @@ from app.llm import get_llm
 
 
 @tool
-def search_arxiv(queries: list[str]) -> str:
+def search_papers(queries: list[str]) -> str:
     """按关键词检索 arxiv 论文。queries 是英文检索短语列表。"""
     return f"找到 {len(queries)} 组检索词的论文"
 
@@ -24,13 +24,13 @@ def get_weather(city: str) -> str:
 
 
 def _check_tool_calling() -> dict:
-    llm = get_llm().bind_tools([search_arxiv, get_weather])
+    llm = get_llm().bind_tools([search_papers, get_weather])
 
     # 1) 单工具选择 + 填参
     r1 = llm.invoke("帮我研究一下 LLM 推理加速这个方向，先去检索相关论文")
     picked = [tc["name"] for tc in r1.tool_calls]
     args_ok = any(
-        tc["name"] == "search_arxiv" and tc["args"].get("queries")
+        tc["name"] == "search_papers" and tc["args"].get("queries")
         for tc in r1.tool_calls
     )
 

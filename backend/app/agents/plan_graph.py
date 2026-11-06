@@ -6,7 +6,7 @@ StateGraph(PlanState):
             ↓ resume reject  → END
 
 checkpointer 复用 research_agent.get_saver() 单例（同一 SQLite DB，同一连接，
-thread_id=session_id 与现有 /api/research/stream 物理分桶一致）。
+thread_id=session_id 与研究澄清、计划和执行接口物理分桶一致）。
 
 **关键决定**：
 - planner_node 是纯 LLM node，interrupt() 在它里面安全（无副作用，resume 重跑不双执行）

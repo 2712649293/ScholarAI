@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import {
   approvePlanStream,
   chatQA,
+  cancelResearch,
   clarifyStream,
   clarifyContinueStream,
   continueResearchStream,
@@ -177,6 +178,7 @@ export function ChatPanel() {
     const sseFn = isContinue
       ? (on: (e: string, d: unknown) => void) => clarifyContinueStream(sessionId!, query, on)
       : (on: (e: string, d: unknown) => void) => clarifyStream(body!, on)
+    let streamSessionId = sessionId
 
     const runId = ++sseRunIdRef.current
     sseAbortRef.current?.()
@@ -185,7 +187,8 @@ export function ChatPanel() {
       if (event === 'session') {
         // 只记 sessionId，不 navigate——navigate 会触发 useEffect cleanup
         // 把正在跑的 SSE 流 abort 掉，导致后续 message 事件收不到。
-        setSessionId((data as { session_id: string }).session_id)
+        streamSessionId = (data as { session_id: string }).session_id
+        setSessionId(streamSessionId)
       } else if (event === 'message') {
         const { content } = data as { content: string }
         setMessages((m) => [...m, { role: 'assistant', content }])
@@ -197,7 +200,11 @@ export function ChatPanel() {
         clarifyActiveRef.current = false
         setPhase('planning')
         // auto-trigger plan generation
-        startPlan({ query: cf.clarify_direction.refined_query, session_id: cf.session_id })
+        startPlan({
+          query: cf.clarify_direction.refined_query,
+          session_id: cf.session_id,
+          research_mode: cf.research_mode ?? 'quick',
+        })
           .then((resp) => {
             if (runId !== sseRunIdRef.current) return
             setMessages((m) => [
@@ -214,6 +221,7 @@ export function ChatPanel() {
           })
       } else if (event === 'complete') {
         if (clarifyActiveRef.current) setPhase('idle')
+        if (!routeSessionId && streamSessionId) navigate(`/chat/${streamSessionId}`)
       } else if (event === 'error') {
         setError((data as { message?: string }).message ?? '澄清失败')
         setPhase('idle')
@@ -247,10 +255,15 @@ export function ChatPanel() {
         if (final.failure_reason === 'search_failed') {
           setError('⚠️ 论文检索失败（arXiv 服务暂时不可达）。请稍后重试。')
         } else if (final.failure_reason === 'download_failed') {
-          setError('⚠️ 论文 PDF 下载失败。综述已基于摘要生成，过段时间可重试。')
+          setError('⚠️ 论文 PDF 下载失败，且未能生成可用的摘要综述，请稍后重试。')
+        } else if (final.failure_reason === 'analysis_failed') {
+          setError('⚠️ 没有可用的论文分析结果或下载失败论文的摘要，未能生成综述。')
+        } else if (final.failure_reason === 'review_failed') {
+          setError('⚠️ 综述已生成，但自动审校失败，请人工复核引用和结论。')
         }
       } else if (event === 'error') {
-        setError((data as { message?: string }).message ?? '执行失败')
+        const errorData = data as { code?: string; message?: string }
+        setError(errorData.message ?? '执行失败')
         setPhase('idle')
         setRecovery('reconnect')
         getPlan(sid).then(async (plan) => {
@@ -293,6 +306,15 @@ export function ChatPanel() {
     if (!sessionId) return
     const connect = recovery === 'resume' ? resumeResearchStream : researchEvents
     observeResearch(sessionId, (onEvent) => connect(sessionId, onEvent))
+  }
+
+  async function handleCancelResearch() {
+    if (!sessionId) return
+    try {
+      await cancelResearch(sessionId)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err))
+    }
   }
 
   /** 用户点 "拒绝" → 调 reject endpoint，卡片变灰。 */
@@ -450,7 +472,18 @@ export function ChatPanel() {
               正在生成研究计划…
             </div>
           )}
-          {phase === 'executing' && <ResearchProgress steps={researchSteps} />}
+          {phase === 'executing' && (
+            <div className="space-y-2">
+              <ResearchProgress steps={researchSteps} />
+              <button
+                type="button"
+                onClick={handleCancelResearch}
+                className="rounded border border-red-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50"
+              >
+                停止研究
+              </button>
+            </div>
+          )}
           {phase === 'planning' && mode === 'qa' && (
             <div className="mr-auto max-w-[80%] rounded-lg bg-white px-4 py-2 text-sm text-zinc-400 shadow-sm">
               思考中…

@@ -45,11 +45,14 @@ export function PlanCard({ plan, status, onApprove, onReject, onSave }: PlanCard
     if (JSON.stringify(draft.outline) !== JSON.stringify(plan.outline)) {
       patch.outline = draft.outline
     }
+    if ((draft.research_mode ?? 'quick') !== (plan.research_mode ?? 'quick')) {
+      patch.research_mode = draft.research_mode ?? 'quick'
+    }
     if (Object.keys(patch).length > 0) onSave?.(patch)
     setEditing(false)
   }
 
-  const isReadOnly = status === 'approved' || status === 'rejected' || status === 'edited'
+  const isReadOnly = status === 'approved' || status === 'rejected'
 
   return (
     <div
@@ -86,6 +89,23 @@ export function PlanCard({ plan, status, onApprove, onReject, onSave }: PlanCard
               </li>
             ))}
           </ol>
+        )}
+      </Section>
+
+      <Section title="研究模式">
+        {editing ? (
+          <select
+            value={draft.research_mode ?? 'quick'}
+            onChange={(event) => setDraft({ ...draft, research_mode: event.target.value as 'quick' | 'deep' })}
+            className="rounded border border-zinc-200 px-2 py-1 text-xs"
+          >
+            <option value="quick">快速研究（标题与摘要）</option>
+            <option value="deep">深度研究（下载、分析与审校）</option>
+          </select>
+        ) : (
+          <span className="text-zinc-700">
+            {(plan.research_mode ?? 'quick') === 'deep' ? '深度研究' : '快速研究'}
+          </span>
         )}
       </Section>
 
@@ -184,7 +204,6 @@ export function PlanCard({ plan, status, onApprove, onReject, onSave }: PlanCard
           <span className="text-xs text-zinc-400">
             {status === 'approved' && '已批准，研究流执行中'}
             {status === 'rejected' && '已拒绝，重新输入方向可生成新计划'}
-            {status === 'edited' && '已编辑，等待批准'}
           </span>
         ) : (
           <>

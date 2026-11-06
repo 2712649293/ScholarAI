@@ -17,6 +17,8 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from app.agents.intent import requested_research_mode
+
 CLARIFY_SYSTEM = """你是学术研究意图澄清助手。用户给出了一个研究方向，你的任务是与用户对话，
 确保对研究方向的理解达到 90%+ 之后再确认。
 
@@ -110,6 +112,8 @@ def make_clarify_tools() -> list:
                 },
                 "plan_status": "pending",
                 "query": refined_query,
+                "clarified_query": refined_query,
+                "research_mode": runtime.state.get("research_mode") or requested_research_mode(refined_query),
             }
         )
 
